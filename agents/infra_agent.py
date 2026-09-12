@@ -17,5 +17,6 @@ def run_infra_agent(state: CortexState) -> dict:
     if "infra_agent" not in state.get("agents_to_run", []):
         return {"findings": []}
     agent = InfraAgent()
-    findings = agent.analyze(state["goal"])
+    focus = state.get("agent_focus", {}).get("infra_agent", "")
+    findings = agent.analyze(state["goal"], focus=focus)
     return {"findings": findings}

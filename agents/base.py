@@ -57,7 +57,7 @@ Rules:
             lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
         return "\n".join(lines)
 
-    def analyze(self, goal: str) -> list[AgentFinding]:
+    def analyze(self, goal: str, focus: str = "") -> list[AgentFinding]:
         """Run agent analysis with long-term memory context."""
 
         # Read files
@@ -74,9 +74,12 @@ Rules:
             for path, content in file_contents.items()
         )
 
+        focus_line = f"Focus specifically on: {focus}\n\n" if focus else ""
+
         user_message = (
             f"Goal: {goal}\n\n"
             f"Domain: {self.domain}\n\n"
+            f"{focus_line}"
             f"KNOWN ISSUES (already reported — do NOT repeat these):\n"
             f"{known_issues_text}\n\n"
             f"Review these files for NEW issues only:\n\n"

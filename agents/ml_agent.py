@@ -15,5 +15,6 @@ def run_ml_agent(state: CortexState) -> dict:
     if "ml_agent" not in state.get("agents_to_run", []):
         return {"findings": []}
     agent = MLAgent()
-    findings = agent.analyze(state["goal"])
+    focus = state.get("agent_focus", {}).get("ml_agent", "")
+    findings = agent.analyze(state["goal"], focus=focus)
     return {"findings": findings}

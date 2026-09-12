@@ -68,4 +68,5 @@ def run_planner(state: CortexState) -> dict:
     return {
         "plan": plan_json.get("plan", []),
         "agents_to_run": plan_json.get("agents_to_run", AVAILABLE_AGENTS),
+        "agent_focus": plan_json.get("focus", {}),
     }
