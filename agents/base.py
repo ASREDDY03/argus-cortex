@@ -2,6 +2,11 @@
 Base class for all Generator agents.
 Each agent uses claude-haiku-4-5, reads code from the Argus Agent repo,
 and queries long-term memory to avoid re-reporting known issues.
+
+Prompt caching strategy:
+  - System prompt     → cached (static across all runs)
+  - File contents     → cached (large, rarely change — biggest cost saving)
+  - Goal/focus/known  → NOT cached (changes every run)
 """
 import json
 import anthropic
@@ -42,7 +47,6 @@ Rules:
 - Return ONLY the JSON array, no markdown, no explanation"""
 
     def read_file(self, relative_path: str) -> str:
-        """Read a file from the local Argus Agent repo."""
         full_path = Path(settings.argus_repo_path) / relative_path
         if not full_path.exists():
             return f"[File not found: {relative_path}]"
@@ -58,14 +62,14 @@ Rules:
         return "\n".join(lines)
 
     def analyze(self, goal: str, focus: str = "") -> list[AgentFinding]:
-        """Run agent analysis with long-term memory context."""
+        """Run agent analysis with long-term memory context and prompt caching."""
 
         # Read files
         file_contents: dict[str, str] = {}
         for f in self.files_to_review:
             file_contents[f] = self.read_file(f)
 
-        # Query long-term memory for known issues in these files
+        # Query long-term memory
         past_findings = get_past_findings_for_files(self.files_to_review)
         known_issues_text = self._format_known_issues(past_findings)
 
@@ -76,21 +80,44 @@ Rules:
 
         focus_line = f"Focus specifically on: {focus}\n\n" if focus else ""
 
-        user_message = (
+        dynamic_block = (
             f"Goal: {goal}\n\n"
             f"Domain: {self.domain}\n\n"
             f"{focus_line}"
             f"KNOWN ISSUES (already reported — do NOT repeat these):\n"
             f"{known_issues_text}\n\n"
-            f"Review these files for NEW issues only:\n\n"
-            f"{files_block}"
+            f"Review the files above for NEW issues only."
         )
 
         response = client.messages.create(
             model=settings.agent_model,
             max_tokens=4096,
-            system=self.AGENT_SYSTEM,
-            messages=[{"role": "user", "content": user_message}],
+            # Cache the system prompt — static, same on every agent call
+            system=[
+                {
+                    "type": "text",
+                    "text": self.AGENT_SYSTEM,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        # Cache the file contents — large, rarely change between runs
+                        {
+                            "type": "text",
+                            "text": files_block,
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                        # NOT cached — goal, focus, known issues change every run
+                        {
+                            "type": "text",
+                            "text": dynamic_block,
+                        },
+                    ],
+                }
+            ],
         )
 
         raw = response.content[0].text.strip()
