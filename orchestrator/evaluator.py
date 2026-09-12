@@ -40,7 +40,14 @@ def run_evaluator(state: CortexState) -> dict:
     response = client.messages.create(
         model=settings.orchestrator_model,
         max_tokens=2048,
-        system=EVALUATOR_SYSTEM,
+        # Cache system prompt — static across all evaluator calls
+        system=[
+            {
+                "type": "text",
+                "text": EVALUATOR_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[
             {
                 "role": "user",
