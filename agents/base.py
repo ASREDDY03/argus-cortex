@@ -7,13 +7,17 @@ Prompt caching strategy:
   - System prompt     → cached (static across all runs)
   - File contents     → cached (large, rarely change — biggest cost saving)
   - Goal/focus/known  → NOT cached (changes every run)
+
+Retry strategy:
+  - API calls    → retried up to 3x with exponential backoff (rate limits, connection errors)
+  - JSON parsing → retried once with a stricter re-prompt if LLM returns malformed output
 """
-import json
 import anthropic
 from pathlib import Path
 from langsmith import traceable
 from memory.state import AgentFinding
 from memory.long_term import get_past_findings_for_files
+from tools.retry import retry_api, parse_json_with_retry
 from config.settings import settings
 
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -47,6 +51,8 @@ Rules:
 - No vague suggestions like "improve error handling" — say exactly what to change
 - Return ONLY the JSON array, no markdown, no explanation"""
 
+    JSON_REPAIR_PROMPT = "Your previous response was not valid JSON. Return ONLY a valid JSON array of findings. No markdown, no explanation, just the JSON array."
+
     def read_file(self, relative_path: str) -> str:
         full_path = Path(settings.argus_repo_path) / relative_path
         if not full_path.exists():
@@ -62,9 +68,20 @@ Rules:
             lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
         return "\n".join(lines)
 
+    @retry_api
+    def _call_api(self, system: list, messages: list) -> str:
+        """Single API call — decorated with retry_api for automatic backoff on failures."""
+        response = client.messages.create(
+            model=settings.agent_model,
+            max_tokens=4096,
+            system=system,
+            messages=messages,
+        )
+        return response.content[0].text.strip()
+
     @traceable(run_type="chain")
     def analyze(self, goal: str, focus: str = "") -> list[AgentFinding]:
-        """Run agent analysis with long-term memory context and prompt caching."""
+        """Run agent analysis with long-term memory, prompt caching, and retry logic."""
 
         # Read files
         file_contents: dict[str, str] = {}
@@ -91,44 +108,44 @@ Rules:
             f"Review the files above for NEW issues only."
         )
 
-        response = client.messages.create(
-            model=settings.agent_model,
-            max_tokens=4096,
-            # Cache the system prompt — static, same on every agent call
-            system=[
-                {
-                    "type": "text",
-                    "text": self.AGENT_SYSTEM,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        # Cache the file contents — large, rarely change between runs
-                        {
-                            "type": "text",
-                            "text": files_block,
-                            "cache_control": {"type": "ephemeral"},
-                        },
-                        # NOT cached — goal, focus, known issues change every run
-                        {
-                            "type": "text",
-                            "text": dynamic_block,
-                        },
-                    ],
-                }
-            ],
-        )
+        system = [
+            {
+                "type": "text",
+                "text": self.AGENT_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
 
-        raw = response.content[0].text.strip()
-        start = raw.find("[")
-        end = raw.rfind("]") + 1
-        if start == -1 or end == 0:
-            return []
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": files_block,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": dynamic_block,
+                    },
+                ],
+            }
+        ]
 
-        findings = json.loads(raw[start:end])
+        # API call with retry
+        raw = self._call_api(system, messages)
+
+        # JSON parsing with retry — re-prompts if output is malformed
+        def reprompt() -> str:
+            repair_messages = messages + [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": self.JSON_REPAIR_PROMPT},
+            ]
+            return self._call_api(system, repair_messages)
+
+        findings = parse_json_with_retry(raw, kind="array", reprompt_fn=reprompt)
+
         for f in findings:
             f["agent"] = self.name
         return findings

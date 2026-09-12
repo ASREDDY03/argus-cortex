@@ -1,14 +1,11 @@
 """
 Planner Agent — claude-sonnet-4-6
-Receives the high-level goal and produces a structured plan:
-- Which agents to run
-- What each agent should focus on
-- Priority order
+Receives the high-level goal and produces a structured plan.
 """
-import json
 import anthropic
 from langsmith import traceable
 from memory.state import CortexState
+from tools.retry import retry_api, parse_json_with_retry
 from config.settings import settings
 
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -46,33 +43,35 @@ Always return valid JSON in this exact format:
   }
 }"""
 
+SYSTEM_BLOCK = [{"type": "text", "text": PLANNER_SYSTEM, "cache_control": {"type": "ephemeral"}}]
+
+
+@retry_api
+def _call_planner(messages: list) -> str:
+    response = client.messages.create(
+        model=settings.orchestrator_model,
+        max_tokens=1024,
+        system=SYSTEM_BLOCK,
+        messages=messages,
+    )
+    return response.content[0].text
+
 
 @traceable(run_type="chain", name="planner")
 def run_planner(state: CortexState) -> dict:
     """LangGraph node: Planner."""
     goal = state["goal"]
+    messages = [{"role": "user", "content": f"Goal: {goal}\n\nCreate a plan and select the right agents."}]
 
-    response = client.messages.create(
-        model=settings.orchestrator_model,
-        max_tokens=1024,
-        # Cache system prompt — static, same on every planner call
-        system=[
-            {
-                "type": "text",
-                "text": PLANNER_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[
-            {"role": "user", "content": f"Goal: {goal}\n\nCreate a plan and select the right agents."}
-        ],
-    )
+    raw = _call_planner(messages)
 
-    raw = response.content[0].text
-    # Extract JSON from response
-    start = raw.find("{")
-    end = raw.rfind("}") + 1
-    plan_json = json.loads(raw[start:end])
+    def reprompt() -> str:
+        return _call_planner(messages + [
+            {"role": "assistant", "content": raw},
+            {"role": "user", "content": "Return ONLY valid JSON in the required format. No explanation."},
+        ])
+
+    plan_json = parse_json_with_retry(raw, kind="object", reprompt_fn=reprompt)
 
     return {
         "plan": plan_json.get("plan", []),
