@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
+from tools.observability import init_tracing
 from orchestrator.graph import build_graph
 from memory.long_term import (
     start_run, finish_run, save_findings,
@@ -32,14 +33,17 @@ def run(
     """Run the Argus Cortex agent network."""
 
     init_db()
+    tracing_enabled = init_tracing()
     thread_id = thread_id or str(uuid.uuid4())
     run_id = start_run(thread_id, goal)
     config = {"configurable": {"thread_id": thread_id}}
 
+    tracing_line = "[green]LangSmith tracing ON[/green]" if tracing_enabled else "[dim]LangSmith tracing OFF (add LANGCHAIN_API_KEY)[/dim]"
     console.print(Panel(
         f"[bold cyan]Argus Cortex[/bold cyan]\n"
         f"[dim]Thread: {thread_id}[/dim]\n"
-        f"[dim]Run:    {run_id}[/dim]\n\n"
+        f"[dim]Run:    {run_id}[/dim]\n"
+        f"{tracing_line}\n\n"
         f"[bold]Goal:[/bold] {goal}",
         border_style="cyan"
     ))
@@ -233,7 +237,12 @@ def _print_results(state: dict, thread_id: str, goal: str):
     if summary:
         console.print(Panel(summary, title="Summary", border_style="green"))
 
-    console.print(f"\n[dim]Resume this run: python main.py run '{goal}' --thread-id {thread_id}[/dim]\n")
+    console.print(f"\n[dim]Resume this run: python main.py run '{goal}' --thread-id {thread_id}[/dim]")
+    if tracing_enabled:
+        from config.settings import settings
+        console.print(f"[dim]LangSmith traces: https://smith.langchain.com/o/projects/{settings.langchain_project}[/dim]\n")
+    else:
+        console.print()
 
 
 def _agent_from_pr_url(url: str) -> str:

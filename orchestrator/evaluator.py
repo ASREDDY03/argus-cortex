@@ -5,6 +5,7 @@ Rejects low quality, vague, or incorrect findings before PRs are opened.
 """
 import json
 import anthropic
+from langsmith import traceable
 from memory.state import CortexState, AgentFinding
 from config.settings import settings
 
@@ -24,6 +25,7 @@ Return JSON in this exact format:
 }"""
 
 
+@traceable(run_type="chain", name="evaluator")
 def run_evaluator(state: CortexState) -> dict:
     """LangGraph node: Evaluator."""
     findings = state.get("findings", [])
