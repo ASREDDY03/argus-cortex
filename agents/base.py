@@ -11,6 +11,7 @@ Prompt caching strategy:
 import json
 import anthropic
 from pathlib import Path
+from langsmith import traceable
 from memory.state import AgentFinding
 from memory.long_term import get_past_findings_for_files
 from config.settings import settings
@@ -61,6 +62,7 @@ Rules:
             lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
         return "\n".join(lines)
 
+    @traceable(run_type="chain")
     def analyze(self, goal: str, focus: str = "") -> list[AgentFinding]:
         """Run agent analysis with long-term memory context and prompt caching."""
 
