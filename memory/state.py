@@ -10,6 +10,8 @@ class AgentFinding(TypedDict):
     category: str           # duplication | security | performance | bug | style
     description: str
     suggested_fix: str
+    old_code: str           # exact code to replace (empty string if not applicable)
+    new_code: str           # replacement code (empty string if not applicable)
     pr_ready: bool
 
 

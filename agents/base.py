@@ -40,15 +40,18 @@ Each finding must follow this exact format:
   "severity": "<critical|high|medium|low>",
   "category": "<bug|security|performance|duplication|style>",
   "description": "<specific description of the issue>",
-  "suggested_fix": "<concrete fix with code snippet if possible>",
-  "pr_ready": <true if you can provide a specific code change, false otherwise>
+  "suggested_fix": "<one-line summary of the fix>",
+  "old_code": "<the exact lines to replace, copy-pasted from the file — empty string if not applicable>",
+  "new_code": "<the replacement lines — empty string if not applicable>",
+  "pr_ready": <true if old_code and new_code are both non-empty and the change is safe to apply>
 }
 
 Rules:
 - Be specific — include file + line number whenever possible
+- old_code must be the EXACT text from the file (copy paste it) — it will be used for find-and-replace
+- old_code must be unique in the file — include enough surrounding lines to make it unique
 - Do NOT re-report issues listed in the KNOWN ISSUES section below
 - Focus on NEW issues not previously found
-- No vague suggestions like "improve error handling" — say exactly what to change
 - Return ONLY the JSON array, no markdown, no explanation"""
 
     JSON_REPAIR_PROMPT = "Your previous response was not valid JSON. Return ONLY a valid JSON array of findings. No markdown, no explanation, just the JSON array."
