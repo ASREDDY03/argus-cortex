@@ -6,8 +6,8 @@ class AgentFinding(TypedDict):
     agent: str
     file: str
     line: int | None
-    severity: str          # critical | high | medium | low
-    category: str          # duplication | security | performance | bug | style
+    severity: str           # critical | high | medium | low
+    category: str           # duplication | security | performance | bug | style
     description: str
     suggested_fix: str
     pr_ready: bool
@@ -15,20 +15,29 @@ class AgentFinding(TypedDict):
 
 class CortexState(TypedDict):
     """Shared state across the entire agent graph."""
+
     # Input
     goal: str
+
+    # Run tracking (long-term memory)
+    run_id: str
+    thread_id: str
 
     # Planner output
     plan: List[str]
     agents_to_run: List[str]
 
-    # Generator outputs (one per agent)
+    # Generator outputs — merged across all agents automatically
     findings: Annotated[List[AgentFinding], lambda a, b: a + b]
 
     # Evaluator output
     approved_findings: List[AgentFinding]
     rejected_findings: List[AgentFinding]
     evaluation_notes: str
+
+    # Human-in-the-loop — set during the interrupt pause
+    human_approved_indices: List[int]   # which approved_findings to actually PR
+    human_notes: str                    # optional human comment
 
     # Final output
     pr_urls: List[str]

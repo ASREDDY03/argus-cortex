@@ -1,12 +1,13 @@
 """
 Base class for all Generator agents.
-Each agent uses claude-haiku-4-5 and reads code from the Argus Agent repo.
+Each agent uses claude-haiku-4-5, reads code from the Argus Agent repo,
+and queries long-term memory to avoid re-reporting known issues.
 """
-import os
 import json
 import anthropic
 from pathlib import Path
 from memory.state import AgentFinding
+from memory.long_term import get_past_findings_for_files
 from config.settings import settings
 
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -17,9 +18,11 @@ class BaseAgent:
     domain: str = ""
     files_to_review: list[str] = []
 
-    AGENT_SYSTEM = """You are a specialized code review agent. Analyze the provided code and return findings as JSON.
+    AGENT_SYSTEM = """You are a specialized code review agent for the Argus Agent DevOps system.
 
-Each finding must follow this format:
+Analyze the provided code and return findings as a JSON array.
+
+Each finding must follow this exact format:
 {
   "agent": "<your agent name>",
   "file": "<relative file path>",
@@ -27,50 +30,73 @@ Each finding must follow this format:
   "severity": "<critical|high|medium|low>",
   "category": "<bug|security|performance|duplication|style>",
   "description": "<specific description of the issue>",
-  "suggested_fix": "<concrete fix with code if possible>",
-  "pr_ready": <true if you can provide a specific code change>
+  "suggested_fix": "<concrete fix with code snippet if possible>",
+  "pr_ready": <true if you can provide a specific code change, false otherwise>
 }
 
-Return a JSON array of findings. Be specific. No vague suggestions."""
+Rules:
+- Be specific — include file + line number whenever possible
+- Do NOT re-report issues listed in the KNOWN ISSUES section below
+- Focus on NEW issues not previously found
+- No vague suggestions like "improve error handling" — say exactly what to change
+- Return ONLY the JSON array, no markdown, no explanation"""
 
     def read_file(self, relative_path: str) -> str:
-        """Read a file from the Argus Agent repo."""
+        """Read a file from the local Argus Agent repo."""
         full_path = Path(settings.argus_repo_path) / relative_path
         if not full_path.exists():
             return f"[File not found: {relative_path}]"
         return full_path.read_text(encoding="utf-8")
 
+    def _format_known_issues(self, past: list[dict]) -> str:
+        if not past:
+            return "None."
+        lines = []
+        for p in past:
+            status = f"PR: {p['pr_url']}" if p.get("pr_url") else "reported, no PR yet"
+            lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
+        return "\n".join(lines)
+
     def analyze(self, goal: str) -> list[AgentFinding]:
-        """Run the agent analysis. Override files_to_review in subclasses."""
-        file_contents = {}
+        """Run agent analysis with long-term memory context."""
+
+        # Read files
+        file_contents: dict[str, str] = {}
         for f in self.files_to_review:
             file_contents[f] = self.read_file(f)
+
+        # Query long-term memory for known issues in these files
+        past_findings = get_past_findings_for_files(self.files_to_review)
+        known_issues_text = self._format_known_issues(past_findings)
 
         files_block = "\n\n".join(
             f"=== {path} ===\n{content}"
             for path, content in file_contents.items()
         )
 
+        user_message = (
+            f"Goal: {goal}\n\n"
+            f"Domain: {self.domain}\n\n"
+            f"KNOWN ISSUES (already reported — do NOT repeat these):\n"
+            f"{known_issues_text}\n\n"
+            f"Review these files for NEW issues only:\n\n"
+            f"{files_block}"
+        )
+
         response = client.messages.create(
             model=settings.agent_model,
             max_tokens=4096,
             system=self.AGENT_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Goal: {goal}\n\nDomain: {self.domain}\n\nReview these files:\n\n{files_block}",
-                }
-            ],
+            messages=[{"role": "user", "content": user_message}],
         )
 
-        raw = response.content[0].text
+        raw = response.content[0].text.strip()
         start = raw.find("[")
         end = raw.rfind("]") + 1
-        if start == -1:
+        if start == -1 or end == 0:
             return []
 
         findings = json.loads(raw[start:end])
-        # Ensure agent name is set
         for f in findings:
             f["agent"] = self.name
         return findings

@@ -1,22 +1,33 @@
 """
-LangGraph StateGraph — the agent network.
+LangGraph StateGraph — Argus Cortex agent network.
 
-Flow:
+Full flow:
   planner
     ↓
-  [springboot_agent, ml_agent, react_agent, infra_agent, observability_agent]  ← parallel
+  [springboot, ml, react, infra, observability]  ← parallel Generator agents
     ↓
   evaluator
-    ↓
-  pr_creator  ← opens one draft PR per agent domain on Argus Agent repo
-    ↓
-  END
+    ↓ (conditional)
+  ┌─ no approved findings → END
+  └─ approved findings → human_review  ← INTERRUPT HERE (human-in-the-loop)
+                              ↓
+                          pr_creator   ← opens draft PRs on GitHub
+                              ↓
+                            END
+
+Key LangGraph features used:
+  - Parallel fan-out (planner → 5 agents simultaneously)
+  - State merging (findings from all agents merged via reducer)
+  - Conditional edges (route based on evaluator output)
+  - interrupt_before=["human_review"] (pause for human approval)
+  - SqliteSaver checkpointing (durable, survives crashes, resumable)
 """
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from memory.state import CortexState
 from orchestrator.planner import run_planner
 from orchestrator.evaluator import run_evaluator
+from orchestrator.human_review import run_human_review
 from orchestrator.pr_creator import run_pr_creator
 from agents.springboot_agent import run_springboot_agent
 from agents.ml_agent import run_ml_agent
@@ -25,12 +36,23 @@ from agents.infra_agent import run_infra_agent
 from agents.observability_agent import run_observability_agent
 
 
+def _route_after_evaluator(state: CortexState) -> str:
+    """
+    Conditional edge: after Evaluator, decide next node.
+    - If there are approved findings → go to human_review (interrupt point)
+    - If nothing approved → END (no point asking human)
+    """
+    if state.get("approved_findings"):
+        return "human_review"
+    return END
+
+
 def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
-    """Build and compile the Argus Cortex agent graph."""
+    """Build and compile the Argus Cortex LangGraph network."""
 
     builder = StateGraph(CortexState)
 
-    # Nodes
+    # --- Nodes ---
     builder.add_node("planner", run_planner)
     builder.add_node("springboot_agent", run_springboot_agent)
     builder.add_node("ml_agent", run_ml_agent)
@@ -38,30 +60,39 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("infra_agent", run_infra_agent)
     builder.add_node("observability_agent", run_observability_agent)
     builder.add_node("evaluator", run_evaluator)
+    builder.add_node("human_review", run_human_review)
     builder.add_node("pr_creator", run_pr_creator)
 
-    # Entry
+    # --- Entry point ---
     builder.set_entry_point("planner")
 
-    # Planner → all agents (parallel)
-    builder.add_edge("planner", "springboot_agent")
-    builder.add_edge("planner", "ml_agent")
-    builder.add_edge("planner", "react_agent")
-    builder.add_edge("planner", "infra_agent")
-    builder.add_edge("planner", "observability_agent")
+    # --- Planner → all Generator agents (parallel fan-out) ---
+    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent"]:
+        builder.add_edge("planner", agent)
 
-    # All agents → evaluator
-    builder.add_edge("springboot_agent", "evaluator")
-    builder.add_edge("ml_agent", "evaluator")
-    builder.add_edge("react_agent", "evaluator")
-    builder.add_edge("infra_agent", "evaluator")
-    builder.add_edge("observability_agent", "evaluator")
+    # --- All Generator agents → Evaluator (fan-in, state merger handles combining findings) ---
+    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent"]:
+        builder.add_edge(agent, "evaluator")
 
-    # Evaluator → PR Creator → END
-    builder.add_edge("evaluator", "pr_creator")
+    # --- Evaluator → conditional routing ---
+    builder.add_conditional_edges(
+        "evaluator",
+        _route_after_evaluator,
+        {
+            "human_review": "human_review",
+            END: END,
+        },
+    )
+
+    # --- Human Review → PR Creator → END ---
+    builder.add_edge("human_review", "pr_creator")
     builder.add_edge("pr_creator", END)
 
-    # Durable checkpointing — survives crashes
+    # --- Durable checkpointing (SQLite) ---
     checkpointer = SqliteSaver.from_conn_string(checkpoint_path)
 
-    return builder.compile(checkpointer=checkpointer)
+    # --- Compile with human-in-the-loop interrupt ---
+    return builder.compile(
+        checkpointer=checkpointer,
+        interrupt_before=["human_review"],  # Graph pauses here for human approval
+    )
