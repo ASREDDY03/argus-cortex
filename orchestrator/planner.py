@@ -53,7 +53,14 @@ def run_planner(state: CortexState) -> dict:
     response = client.messages.create(
         model=settings.orchestrator_model,
         max_tokens=1024,
-        system=PLANNER_SYSTEM,
+        # Cache system prompt — static, same on every planner call
+        system=[
+            {
+                "type": "text",
+                "text": PLANNER_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[
             {"role": "user", "content": f"Goal: {goal}\n\nCreate a plan and select the right agents."}
         ],
