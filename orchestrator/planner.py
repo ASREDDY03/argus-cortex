@@ -7,6 +7,7 @@ Receives the high-level goal and produces a structured plan:
 """
 import json
 import anthropic
+from langsmith import traceable
 from memory.state import CortexState
 from config.settings import settings
 
@@ -46,6 +47,7 @@ Always return valid JSON in this exact format:
 }"""
 
 
+@traceable(run_type="chain", name="planner")
 def run_planner(state: CortexState) -> dict:
     """LangGraph node: Planner."""
     goal = state["goal"]
