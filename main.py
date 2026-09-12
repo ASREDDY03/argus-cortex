@@ -52,6 +52,7 @@ def run(
         "thread_id": thread_id,
         "plan": [],
         "agents_to_run": [],
+        "agent_focus": {},
         "findings": [],
         "approved_findings": [],
         "rejected_findings": [],

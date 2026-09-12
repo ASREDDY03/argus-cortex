@@ -16,5 +16,6 @@ def run_react_agent(state: CortexState) -> dict:
     if "react_agent" not in state.get("agents_to_run", []):
         return {"findings": []}
     agent = ReactAgent()
-    findings = agent.analyze(state["goal"])
+    focus = state.get("agent_focus", {}).get("react_agent", "")
+    findings = agent.analyze(state["goal"], focus=focus)
     return {"findings": findings}
