@@ -8,6 +8,8 @@ Flow:
     ↓
   evaluator
     ↓
+  pr_creator  ← opens one draft PR per agent domain on Argus Agent repo
+    ↓
   END
 """
 from langgraph.graph import StateGraph, END
@@ -15,6 +17,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from memory.state import CortexState
 from orchestrator.planner import run_planner
 from orchestrator.evaluator import run_evaluator
+from orchestrator.pr_creator import run_pr_creator
 from agents.springboot_agent import run_springboot_agent
 from agents.ml_agent import run_ml_agent
 from agents.react_agent import run_react_agent
@@ -35,6 +38,7 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("infra_agent", run_infra_agent)
     builder.add_node("observability_agent", run_observability_agent)
     builder.add_node("evaluator", run_evaluator)
+    builder.add_node("pr_creator", run_pr_creator)
 
     # Entry
     builder.set_entry_point("planner")
@@ -53,8 +57,9 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_edge("infra_agent", "evaluator")
     builder.add_edge("observability_agent", "evaluator")
 
-    # Evaluator → END
-    builder.add_edge("evaluator", END)
+    # Evaluator → PR Creator → END
+    builder.add_edge("evaluator", "pr_creator")
+    builder.add_edge("pr_creator", END)
 
     # Durable checkpointing — survives crashes
     checkpointer = SqliteSaver.from_conn_string(checkpoint_path)

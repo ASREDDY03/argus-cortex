@@ -74,10 +74,29 @@ def run(
             )
         console.print(table)
 
+    # Print rejected findings count
+    rejected = final_state.get("rejected_findings", [])
+    if rejected:
+        console.print(f"[dim]Rejected by Evaluator: {len(rejected)} (too vague or incorrect)[/dim]")
+
     # Print evaluator notes
     notes = final_state.get("evaluation_notes", "")
     if notes:
         console.print(f"\n[bold]Evaluator Notes:[/bold] {notes}")
+
+    # Print PRs opened
+    pr_urls = final_state.get("pr_urls", [])
+    if pr_urls:
+        console.print(f"\n[bold green]PRs Opened ({len(pr_urls)})[/bold green]")
+        for url in pr_urls:
+            console.print(f"  → {url}")
+    else:
+        console.print("\n[yellow]No PRs opened — add GITHUB_TOKEN to .env to enable.[/yellow]")
+
+    # Print summary
+    summary = final_state.get("summary", "")
+    if summary:
+        console.print(f"\n[bold]Summary:[/bold]\n{summary}")
 
     console.print(f"\n[dim]To resume this run: python main.py '{goal}' --thread-id {thread_id}[/dim]\n")
 
