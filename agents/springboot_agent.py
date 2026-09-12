@@ -16,5 +16,6 @@ def run_springboot_agent(state: CortexState) -> dict:
     if "springboot_agent" not in state.get("agents_to_run", []):
         return {"findings": []}
     agent = SpringBootAgent()
-    findings = agent.analyze(state["goal"])
+    focus = state.get("agent_focus", {}).get("springboot_agent", "")
+    findings = agent.analyze(state["goal"], focus=focus)
     return {"findings": findings}
