@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # Local path to Argus Agent
     argus_repo_path: str = ""
 
+    # Webhook server
+    webhook_secret: str = ""   # GitHub webhook secret (set when registering the webhook)
+    webhook_port: int = 8000
+
     class Config:
         env_file = ".env"
         extra = "ignore"
