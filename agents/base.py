@@ -9,52 +9,67 @@ Prompt caching strategy:
   - Goal/focus/known  → NOT cached (changes every run)
 
 Retry strategy:
-  - API calls    → retried up to 3x with exponential backoff (rate limits, connection errors)
-  - JSON parsing → retried once with a stricter re-prompt if LLM returns malformed output
+  - API calls → retried up to 3x with exponential backoff (rate limits, connection errors)
+  - Structured output via tool_use guarantees schema-valid responses — no JSON parsing needed
 """
 import anthropic
 from pathlib import Path
 from langsmith import traceable
 from memory.state import AgentFinding
 from memory.long_term import get_past_findings_for_files
-from tools.retry import retry_api, parse_json_with_retry
+from tools.retry import retry_api
 from config.settings import settings
 
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+# Tool schema — forces the model to return findings in a guaranteed structure.
+# tool_choice={"type": "tool", "name": "report_findings"} means the model MUST call this tool.
+FINDINGS_TOOL = {
+    "name": "report_findings",
+    "description": "Report all code review findings discovered in the analyzed files.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "description": "List of findings. Empty array if no issues found.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file":          {"type": "string",  "description": "Relative file path"},
+                        "line":          {"type": ["integer", "null"], "description": "Line number, or null if not applicable"},
+                        "severity":      {"type": "string",  "enum": ["critical", "high", "medium", "low"]},
+                        "category":      {"type": "string",  "enum": ["bug", "security", "performance", "duplication", "style"]},
+                        "description":   {"type": "string",  "description": "Specific description of the issue"},
+                        "suggested_fix": {"type": "string",  "description": "One-line summary of the fix"},
+                        "old_code":      {"type": "string",  "description": "Exact lines to replace, copy-pasted from the file. Empty string if not applicable."},
+                        "new_code":      {"type": "string",  "description": "Replacement lines. Empty string if not applicable."},
+                        "pr_ready":      {"type": "boolean", "description": "True only if old_code and new_code are both non-empty and the change is safe to apply"},
+                    },
+                    "required": ["file", "line", "severity", "category", "description", "suggested_fix", "old_code", "new_code", "pr_ready"],
+                },
+            }
+        },
+        "required": ["findings"],
+    },
+}
+
+AGENT_SYSTEM = """You are a specialized code review agent for the Argus Agent DevOps system.
+
+Analyze the provided code and report all findings using the report_findings tool.
+
+Rules:
+- Be specific — include file + line number whenever possible
+- old_code must be the EXACT text from the file (copy-paste it) — it will be used for find-and-replace
+- old_code must be unique in the file — include enough surrounding lines to make it unique
+- Do NOT re-report issues listed in the KNOWN ISSUES section
+- Focus on NEW issues not previously found"""
 
 
 class BaseAgent:
     name: str = "base_agent"
     domain: str = ""
     files_to_review: list[str] = []
-
-    AGENT_SYSTEM = """You are a specialized code review agent for the Argus Agent DevOps system.
-
-Analyze the provided code and return findings as a JSON array.
-
-Each finding must follow this exact format:
-{
-  "agent": "<your agent name>",
-  "file": "<relative file path>",
-  "line": <line number or null>,
-  "severity": "<critical|high|medium|low>",
-  "category": "<bug|security|performance|duplication|style>",
-  "description": "<specific description of the issue>",
-  "suggested_fix": "<one-line summary of the fix>",
-  "old_code": "<the exact lines to replace, copy-pasted from the file — empty string if not applicable>",
-  "new_code": "<the replacement lines — empty string if not applicable>",
-  "pr_ready": <true if old_code and new_code are both non-empty and the change is safe to apply>
-}
-
-Rules:
-- Be specific — include file + line number whenever possible
-- old_code must be the EXACT text from the file (copy paste it) — it will be used for find-and-replace
-- old_code must be unique in the file — include enough surrounding lines to make it unique
-- Do NOT re-report issues listed in the KNOWN ISSUES section below
-- Focus on NEW issues not previously found
-- Return ONLY the JSON array, no markdown, no explanation"""
-
-    JSON_REPAIR_PROMPT = "Your previous response was not valid JSON. Return ONLY a valid JSON array of findings. No markdown, no explanation, just the JSON array."
 
     def read_file(self, relative_path: str) -> str:
         full_path = Path(settings.argus_repo_path) / relative_path
@@ -72,19 +87,24 @@ Rules:
         return "\n".join(lines)
 
     @retry_api
-    def _call_api(self, system: list, messages: list) -> str:
-        """Single API call — decorated with retry_api for automatic backoff on failures."""
+    def _call_api(self, system: list, messages: list) -> dict:
+        """Single API call with forced tool_use — returns the parsed tool input dict."""
         response = client.messages.create(
             model=settings.agent_model,
             max_tokens=4096,
             system=system,
             messages=messages,
+            tools=[FINDINGS_TOOL],
+            tool_choice={"type": "tool", "name": "report_findings"},
         )
-        return response.content[0].text.strip()
+        for block in response.content:
+            if block.type == "tool_use":
+                return block.input
+        return {"findings": []}
 
     @traceable(run_type="chain")
     def analyze(self, goal: str, focus: str = "") -> list[AgentFinding]:
-        """Run agent analysis with long-term memory, prompt caching, and retry logic."""
+        """Run agent analysis with long-term memory, prompt caching, and structured output."""
 
         # Read files
         file_contents: dict[str, str] = {}
@@ -114,7 +134,7 @@ Rules:
         system = [
             {
                 "type": "text",
-                "text": self.AGENT_SYSTEM,
+                "text": AGENT_SYSTEM,
                 "cache_control": {"type": "ephemeral"},
             }
         ]
@@ -136,19 +156,8 @@ Rules:
             }
         ]
 
-        # API call with retry
-        raw = self._call_api(system, messages)
-
-        # JSON parsing with retry — re-prompts if output is malformed
-        def reprompt() -> str:
-            repair_messages = messages + [
-                {"role": "assistant", "content": raw},
-                {"role": "user", "content": self.JSON_REPAIR_PROMPT},
-            ]
-            return self._call_api(system, repair_messages)
-
-        findings = parse_json_with_retry(raw, kind="array", reprompt_fn=reprompt)
-
+        result = self._call_api(system, messages)
+        findings = result.get("findings", [])
         for f in findings:
             f["agent"] = self.name
         return findings
