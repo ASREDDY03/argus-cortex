@@ -214,6 +214,124 @@ def update_pr_state_by_url(pr_url: str, state: str):
         )
 
 
+def get_stats() -> dict:
+    """
+    Aggregate statistics across all runs and findings.
+    Used by `python main.py stats`.
+    """
+    init_db()
+    with _conn() as conn:
+
+        # ── Runs ──────────────────────────────────────────────────────────────
+        runs_row = conn.execute("""
+            SELECT
+                COUNT(*)                                                      AS total_runs,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)        AS completed_runs,
+                COALESCE(SUM(cost_usd), 0)                                   AS total_cost,
+                COALESCE(AVG(CASE WHEN status = 'completed' AND cost_usd > 0
+                                  THEN cost_usd END), 0)                     AS avg_cost,
+                COALESCE(SUM(tokens_in),  0)                                 AS total_tokens_in,
+                COALESCE(SUM(tokens_out), 0)                                 AS total_tokens_out
+            FROM runs
+        """).fetchone()
+
+        # ── Findings overall ─────────────────────────────────────────────────
+        findings_row = conn.execute("""
+            SELECT
+                COUNT(*)                                                      AS total,
+                COALESCE(SUM(approved), 0)                                   AS total_approved,
+                COALESCE(SUM(rejected), 0)                                   AS total_rejected,
+                COALESCE(SUM(pr_ready), 0)                                   AS total_pr_ready,
+                SUM(CASE WHEN pr_url IS NOT NULL THEN 1 ELSE 0 END)          AS total_prs_opened
+            FROM findings
+        """).fetchone()
+
+        # ── By severity ───────────────────────────────────────────────────────
+        by_severity = conn.execute("""
+            SELECT severity,
+                   COUNT(*)           AS total,
+                   SUM(approved)      AS approved,
+                   SUM(rejected)      AS rejected
+            FROM findings
+            WHERE severity IS NOT NULL AND severity != ''
+            GROUP BY severity
+            ORDER BY CASE severity
+                WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                WHEN 'medium'   THEN 2 ELSE 3 END
+        """).fetchall()
+
+        # ── By agent ─────────────────────────────────────────────────────────
+        by_agent = conn.execute("""
+            SELECT agent,
+                   COUNT(*)           AS total,
+                   SUM(approved)      AS approved,
+                   SUM(rejected)      AS rejected
+            FROM findings
+            WHERE agent IS NOT NULL AND agent != ''
+            GROUP BY agent
+            ORDER BY total DESC
+        """).fetchall()
+
+        # ── By category ──────────────────────────────────────────────────────
+        by_category = conn.execute("""
+            SELECT category,
+                   COUNT(*)           AS total,
+                   SUM(approved)      AS approved
+            FROM findings
+            WHERE category IS NOT NULL AND category != ''
+            GROUP BY category
+            ORDER BY total DESC
+        """).fetchall()
+
+        # ── PR outcomes ───────────────────────────────────────────────────────
+        pr_rows = conn.execute("""
+            SELECT COALESCE(pr_state, 'open') AS state, COUNT(*) AS count
+            FROM findings
+            WHERE pr_url IS NOT NULL
+            GROUP BY pr_state
+        """).fetchall()
+
+        # ── Top flagged files ─────────────────────────────────────────────────
+        top_files = conn.execute("""
+            SELECT file,
+                   COUNT(*)           AS total,
+                   SUM(approved)      AS approved
+            FROM findings
+            WHERE file IS NOT NULL AND file != ''
+            GROUP BY file
+            ORDER BY total DESC
+            LIMIT 8
+        """).fetchall()
+
+        # ── Cost: last 7 days vs prior 7 days ────────────────────────────────
+        trend_row = conn.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN created_at >= date('now','-7 days')
+                                  THEN cost_usd END), 0)  AS last_7d,
+                COALESCE(SUM(CASE WHEN created_at >= date('now','-14 days')
+                                   AND created_at <  date('now','-7 days')
+                                  THEN cost_usd END), 0)  AS prev_7d,
+                COUNT(CASE WHEN created_at >= date('now','-7 days') THEN 1 END) AS runs_last_7d
+            FROM runs
+            WHERE status = 'completed'
+        """).fetchone()
+
+    pr_outcomes: dict[str, int] = {}
+    for row in pr_rows:
+        pr_outcomes[row["state"]] = row["count"]
+
+    return {
+        "runs":        dict(runs_row),
+        "findings":    dict(findings_row),
+        "by_severity": [dict(r) for r in by_severity],
+        "by_agent":    [dict(r) for r in by_agent],
+        "by_category": [dict(r) for r in by_category],
+        "pr_outcomes": pr_outcomes,
+        "top_files":   [dict(r) for r in top_files],
+        "trend":       dict(trend_row),
+    }
+
+
 def get_run_history(limit: int = 10) -> list[dict]:
     """Return recent runs for display."""
     init_db()
