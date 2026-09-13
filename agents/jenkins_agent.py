@@ -96,12 +96,4 @@ class JenkinsAgent(BaseAgent):
 
 def run_jenkins_agent(state: CortexState) -> dict:
     """LangGraph node: Jenkins Pipeline Generator agent."""
-    if "jenkins_agent" not in state.get("agents_to_run", []):
-        return {"findings": []}
-    agent = JenkinsAgent()
-    discovered = state.get("agent_files", {}).get("jenkins_agent", [])
-    if discovered:
-        agent.files_to_review = discovered
-    focus = state.get("agent_focus", {}).get("jenkins_agent", "")
-    findings = agent.analyze(state["goal"], focus=focus)
-    return {"findings": findings}
+    return JenkinsAgent().run_node(state)

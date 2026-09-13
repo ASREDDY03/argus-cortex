@@ -91,12 +91,15 @@ _llm_with_tools = _llm.bind_tools(
 )
 
 
-def _call_synthesizer(messages: list) -> dict:
-    """Invoke the synthesizer — auto-traced to LangSmith with full prompt + response."""
+def _call_synthesizer(messages: list) -> tuple[dict, int, int]:
+    """Invoke the synthesizer — returns (result, tokens_in, tokens_out)."""
     response = _llm_with_tools.invoke(messages)
+    usage = response.usage_metadata or {}
+    tokens_in  = usage.get("input_tokens", 0)
+    tokens_out = usage.get("output_tokens", 0)
     if response.tool_calls:
-        return response.tool_calls[0]["args"]
-    return {}
+        return response.tool_calls[0]["args"], tokens_in, tokens_out
+    return {}, tokens_in, tokens_out
 
 
 @traceable(run_type="chain", name="synthesizer")
@@ -145,11 +148,13 @@ def run_synthesizer(state: CortexState) -> dict:
         HumanMessage(content=prompt),
     ]
 
-    result = _call_synthesizer(messages)
+    result, tokens_in, tokens_out = _call_synthesizer(messages)
 
     return {
         "cross_cutting_issues": result.get("cross_cutting_issues", []),
         "coverage_gaps": result.get("coverage_gaps", []),
         "retry_agents": result.get("retry_agents", {}),
         "synthesis_notes": result.get("synthesis_notes", ""),
+        "orch_tokens_in": tokens_in,
+        "orch_tokens_out": tokens_out,
     }

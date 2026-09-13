@@ -55,6 +55,14 @@ class CortexState(TypedDict):
     pr_urls: List[str]
     summary: str
 
+    # Token usage — separate per model tier so cost can be computed accurately
+    # agent_*       : claude-haiku-4-5  (all 7 generator agents)
+    # orch_*        : claude-sonnet-4-6 (planner, synthesizer, evaluator)
+    agent_tokens_in:  Annotated[int, lambda a, b: a + b]
+    agent_tokens_out: Annotated[int, lambda a, b: a + b]
+    orch_tokens_in:   Annotated[int, lambda a, b: a + b]
+    orch_tokens_out:  Annotated[int, lambda a, b: a + b]
+
     # Control
     messages: Annotated[list, add_messages]
     error: str | None

@@ -108,12 +108,4 @@ class SecurityAgent(BaseAgent):
 
 def run_security_agent(state: CortexState) -> dict:
     """LangGraph node: Security scanner agent."""
-    if "security_agent" not in state.get("agents_to_run", []):
-        return {"findings": []}
-    agent = SecurityAgent()
-    discovered = state.get("agent_files", {}).get("security_agent", [])
-    if discovered:
-        agent.files_to_review = discovered
-    focus = state.get("agent_focus", {}).get("security_agent", "")
-    findings = agent.analyze(state["goal"], focus=focus)
-    return {"findings": findings}
+    return SecurityAgent().run_node(state)

@@ -141,6 +141,43 @@ def health():
     return {"status": "ok", "service": "argus-cortex-webhook"}
 
 
+@app.post("/run")
+async def manual_run(
+    request: Request,
+    authorization: str | None = Header(None),
+):
+    """
+    Manually trigger a Cortex run from anywhere — lab, phone, curl.
+
+    Auth: Bearer token matching WEBHOOK_SECRET in .env
+      curl -X POST https://<your-ngrok>/run \\
+           -H "Authorization: Bearer <WEBHOOK_SECRET>" \\
+           -H "Content-Type: application/json" \\
+           -d '{"goal": "security audit"}'
+
+    If WEBHOOK_SECRET is not set, the endpoint is open (development only).
+    """
+    if settings.webhook_secret:
+        expected = f"Bearer {settings.webhook_secret}"
+        if authorization != expected:
+            raise HTTPException(status_code=401, detail="Unauthorized — provide Bearer <WEBHOOK_SECRET>")
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    goal = body.get("goal") or "Full audit of Argus Agent — security, CI/CD, and code quality"
+    pusher = body.get("pusher", "manual")
+
+    _spawn_run(goal, pusher)
+    notify_run_start(pusher=pusher, goal=goal)
+
+    logger.info(f"Manual run triggered by {pusher}: {goal}")
+    return JSONResponse({"triggered": True, "goal": goal, "pusher": pusher})
+
+
 @app.get("/runs")
 def recent_runs():
     """Show the last 10 Cortex runs from long-term memory."""

@@ -76,12 +76,15 @@ _llm_with_tools = _llm.bind_tools(
 )
 
 
-def _call_planner(messages: list) -> dict:
-    """Invoke the planner — auto-traced to LangSmith with full prompt + response."""
+def _call_planner(messages: list) -> tuple[dict, int, int]:
+    """Invoke the planner — returns (plan, tokens_in, tokens_out)."""
     response = _llm_with_tools.invoke(messages)
+    usage = response.usage_metadata or {}
+    tokens_in  = usage.get("input_tokens", 0)
+    tokens_out = usage.get("output_tokens", 0)
     if response.tool_calls:
-        return response.tool_calls[0]["args"]
-    return {}
+        return response.tool_calls[0]["args"], tokens_in, tokens_out
+    return {}, tokens_in, tokens_out
 
 
 @traceable(run_type="chain", name="planner")
@@ -106,10 +109,12 @@ def run_planner(state: CortexState) -> dict:
         )),
     ]
 
-    plan = _call_planner(messages)
+    plan, tokens_in, tokens_out = _call_planner(messages)
 
     return {
         "plan": plan.get("plan", []),
         "agents_to_run": plan.get("agents_to_run", AVAILABLE_AGENTS),
         "agent_focus": plan.get("focus", {}),
+        "orch_tokens_in": tokens_in,
+        "orch_tokens_out": tokens_out,
     }

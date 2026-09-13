@@ -12,12 +12,4 @@ class MLAgent(BaseAgent):
 
 def run_ml_agent(state: CortexState) -> dict:
     """LangGraph node: ML Generator agent."""
-    if "ml_agent" not in state.get("agents_to_run", []):
-        return {"findings": []}
-    agent = MLAgent()
-    discovered = state.get("agent_files", {}).get("ml_agent", [])
-    if discovered:
-        agent.files_to_review = discovered
-    focus = state.get("agent_focus", {}).get("ml_agent", "")
-    findings = agent.analyze(state["goal"], focus=focus)
-    return {"findings": findings}
+    return MLAgent().run_node(state)
