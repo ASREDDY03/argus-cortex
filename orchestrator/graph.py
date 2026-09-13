@@ -4,7 +4,7 @@ LangGraph StateGraph — Argus Cortex agent network.
 Full flow:
   planner
     ↓
-  [springboot, ml, react, infra, observability, jenkins]  ← parallel (first pass)
+  [springboot, ml, react, infra, observability, jenkins, security, dependency]  ← parallel (first pass)
     ↓
   synthesizer  ← cross-cutting analysis + coverage gap detection
     ↓ (conditional)
@@ -22,7 +22,7 @@ Full flow:
                                END
 
 Key LangGraph features used:
-  - Parallel fan-out (planner → 6 agents simultaneously)
+  - Parallel fan-out (planner → 8 agents simultaneously)
   - State merging (findings from all agents merged via reducer)
   - Synthesizer (cross-agent analysis before evaluation)
   - Retry loop (synthesizer → retry_dispatcher → agents → synthesizer, max 1 pass)
@@ -46,6 +46,7 @@ from agents.infra_agent import run_infra_agent
 from agents.observability_agent import run_observability_agent
 from agents.jenkins_agent import run_jenkins_agent
 from agents.security_agent import run_security_agent
+from agents.dependency_agent import run_dependency_agent
 
 GENERATOR_AGENTS = [
     "springboot_agent",
@@ -55,6 +56,7 @@ GENERATOR_AGENTS = [
     "observability_agent",
     "jenkins_agent",
     "security_agent",
+    "dependency_agent",
 ]
 
 
@@ -96,6 +98,7 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("observability_agent", run_observability_agent)
     builder.add_node("jenkins_agent", run_jenkins_agent)
     builder.add_node("security_agent", run_security_agent)
+    builder.add_node("dependency_agent", run_dependency_agent)
     builder.add_node("synthesizer", run_synthesizer)
     builder.add_node("retry_dispatcher", run_retry_dispatcher)
     builder.add_node("evaluator", run_evaluator)

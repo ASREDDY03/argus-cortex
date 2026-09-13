@@ -28,6 +28,7 @@ AGENT_DOMAINS = {
     "observability_agent":  ["prometheus.yml", "alert.rules.yml", "alertmanager.yml"],
     "jenkins_agent":        ["Devops/Jenkinsfile", "Devops/docker-compose.yml"],
     "security_agent":       ["JenkinsController.java", "JenkinsService.java", "app.py", "nginx.conf", "docker-compose.yml", "Jenkinsfile"],
+    "dependency_agent":     ["pom.xml", "requirements.txt", "package.json", "docker-compose.yml", "Dockerfile"],
 }
 
 SYNTHESIZER_SYSTEM = """You are the Synthesizer for Argus Cortex, an AI agent network that audits the Argus Agent DevOps system.
