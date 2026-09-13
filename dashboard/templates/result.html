@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Result {{ review.run_id[:8] }} — Argus Cortex{% endblock %}
+
+{% block head %}
+{% if processing %}
+<meta http-equiv="refresh" content="6">
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+<div class="card" style="text-align:center;padding:2.5rem 2rem">
+
+  {% if processing %}
+  <div style="font-size:2.5rem;margin-bottom:1rem">⏳</div>
+  <h2 style="margin-bottom:.5rem">Creating PRs…</h2>
+  <p class="meta" style="margin-bottom:1.5rem">
+    Applying patches, running CI validation, and opening PRs on GitHub.<br>
+    This page refreshes automatically every 6 seconds.
+  </p>
+  <div style="width:60px;height:4px;background:#e2e8f0;border-radius:2px;margin:0 auto;overflow:hidden">
+    <div style="height:100%;background:#2563eb;animation:slide 1.5s linear infinite;border-radius:2px"></div>
+  </div>
+  <style>
+    @keyframes slide {
+      0%   { width:0%;margin-left:0 }
+      50%  { width:60%;margin-left:20% }
+      100% { width:0%;margin-left:100% }
+    }
+  </style>
+
+  {% elif failed %}
+  <div style="font-size:2.5rem;margin-bottom:1rem">❌</div>
+  <h2 style="margin-bottom:.5rem">Something went wrong</h2>
+  <p class="meta" style="margin-bottom:1.5rem">
+    The graph resume failed. Check <code>logs/</code> for details.
+  </p>
+  <a href="/" class="btn btn-ghost">← Back to dashboard</a>
+
+  {% elif pr_urls %}
+  <div style="font-size:2.5rem;margin-bottom:1rem">✅</div>
+  <h2 style="margin-bottom:.5rem">PRs Opened</h2>
+  <p class="meta" style="margin-bottom:1.5rem">
+    {{ pr_urls|length }} draft PR(s) created. Review and merge when satisfied.
+  </p>
+  <div style="display:flex;flex-direction:column;gap:.6rem;align-items:center;margin-bottom:1.5rem">
+    {% for url in pr_urls %}
+    <a href="{{ url }}" target="_blank" class="btn btn-success" style="min-width:220px">
+      View PR →
+    </a>
+    {% endfor %}
+  </div>
+  <a href="/" class="btn btn-ghost">← Back to dashboard</a>
+
+  {% else %}
+  <div style="font-size:2.5rem;margin-bottom:1rem">ℹ️</div>
+  <h2 style="margin-bottom:.5rem">Completed — No PRs</h2>
+  <p class="meta" style="margin-bottom:1.5rem">
+    No pr_ready findings were selected, or GitHub token is not configured.
+  </p>
+  <a href="/" class="btn btn-ghost">← Back to dashboard</a>
+  {% endif %}
+
+</div>
+
+<!-- Run info -->
+<div class="card">
+  <div class="section-title">Run Details</div>
+  <table>
+    <tr>
+      <td class="meta" style="width:140px">Run ID</td>
+      <td class="monospace">{{ review.run_id[:8] }}</td>
+    </tr>
+    <tr>
+      <td class="meta">Goal</td>
+      <td>{{ review.goal }}</td>
+    </tr>
+    {% if review.agents_run %}
+    <tr>
+      <td class="meta">Agents</td>
+      <td class="meta">{{ review.agents_run.replace(",", " · ") }}</td>
+    </tr>
+    {% endif %}
+    {% if review.cost_usd %}
+    <tr>
+      <td class="meta">Cost</td>
+      <td class="meta">${{ "%.4f"|format(review.cost_usd) }}</td>
+    </tr>
+    {% endif %}
+    <tr>
+      <td class="meta">Started</td>
+      <td class="meta">{{ review.created_at[:16] }} UTC</td>
+    </tr>
+    {% if review.completed_at %}
+    <tr>
+      <td class="meta">Completed</td>
+      <td class="meta">{{ review.completed_at[:16] }} UTC</td>
+    </tr>
+    {% endif %}
+  </table>
+</div>
+
+{% endblock %}

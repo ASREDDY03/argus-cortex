@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Review {{ review.run_id[:8] }} — Argus Cortex{% endblock %}
+
+{% block head %}
+<style>
+  .toggle-label {
+    display: flex; align-items: center; gap: .5rem; cursor: pointer;
+    font-size: .875rem; font-weight: 600; user-select: none;
+  }
+  .toggle-label input[type=checkbox] { width: 1.1rem; height: 1.1rem; cursor: pointer; accent-color: #16a34a; }
+  .finding-meta { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: .75rem; }
+  .file-path { font-family: monospace; font-size: .8rem; color: #475569; background: #f1f5f9; padding: .15rem .4rem; border-radius: 4px; }
+  .description { font-size: .9rem; margin-bottom: .5rem; }
+  .suggested-fix { font-size: .82rem; color: #64748b; font-style: italic; }
+  .diff-toggle { font-size: .78rem; color: #2563eb; cursor: pointer; background: none; border: none; padding: 0; margin-top: .5rem; }
+  .diff-section { margin-top: .6rem; }
+  .sticky-bar {
+    position: sticky; bottom: 0; background: #fff; border-top: 2px solid #e2e8f0;
+    padding: 1rem 1.5rem; display: flex; align-items: center; gap: 1rem;
+    box-shadow: 0 -4px 12px rgba(0,0,0,.08); z-index: 10; border-radius: 0 0 10px 10px;
+  }
+  .notes-input {
+    flex: 1; padding: .45rem .75rem; border: 1px solid #cbd5e1; border-radius: 6px;
+    font-size: .875rem; font-family: inherit;
+  }
+  .count-badge { font-size: .8rem; color: #64748b; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Run header -->
+<div class="card" style="margin-bottom:1.5rem">
+  <div class="flex-between">
+    <div>
+      <div class="flex" style="margin-bottom:.35rem">
+        <span class="pill pill-pending">Pending Review</span>
+        <span class="meta monospace">{{ review.run_id[:8] }}</span>
+        {% if review.cost_usd %}<span class="meta">${{ "%.4f"|format(review.cost_usd) }}</span>{% endif %}
+      </div>
+      <div style="font-weight:600;font-size:1.05rem;margin-bottom:.3rem">{{ review.goal }}</div>
+      <div class="meta">
+        {{ ago(review.created_at) }}
+        {% if review.agents_run %}
+          &nbsp;·&nbsp; Agents: {{ review.agents_run.replace(",", ", ") }}
+        {% endif %}
+      </div>
+    </div>
+    <a href="/" class="btn btn-ghost" style="white-space:nowrap">← Back</a>
+  </div>
+</div>
+
+<!-- Instructions -->
+<div class="section-title">{{ findings|length }} finding(s) approved by Evaluator — select which to open PRs for</div>
+
+<form method="POST" action="/review/{{ review.run_id }}/submit" id="review-form">
+
+  {% for f in findings %}
+  {% set idx = loop.index0 %}
+  <div class="finding-card approved" id="card-{{ idx }}">
+
+    <!-- Card header: toggle + badges -->
+    <div class="flex-between" style="margin-bottom:.6rem">
+      <label class="toggle-label">
+        <input type="checkbox" name="approve_{{ idx }}" checked
+               onchange="toggleCard({{ idx }}, this.checked)">
+        Approve
+      </label>
+      <div class="flex">
+        <span class="badge badge-{{ f.severity }}">{{ f.severity }}</span>
+        <span class="badge badge-info">{{ f.category }}</span>
+        {% if f.agent == 'security_agent' %}<span class="badge badge-security">🔒 security</span>
+        {% else %}<span class="meta" style="font-size:.75rem">{{ f.agent }}</span>{% endif %}
+        {% if f.pr_ready %}<span class="badge" style="background:#dbeafe;color:#1e40af">PR ready</span>{% endif %}
+      </div>
+    </div>
+
+    <!-- File + line -->
+    <div class="finding-meta">
+      <span class="file-path">{{ f.file }}{% if f.line %}:{{ f.line }}{% endif %}</span>
+    </div>
+
+    <!-- Description -->
+    <div class="description">{{ f.description }}</div>
+    {% if f.suggested_fix %}
+    <div class="suggested-fix">Fix: {{ f.suggested_fix }}</div>
+    {% endif %}
+
+    <!-- Code diff (collapsible) -->
+    {% if f.old_code or f.new_code %}
+    <button type="button" class="diff-toggle" onclick="toggleDiff({{ idx }})">▶ Show diff</button>
+    <div class="diff-section" id="diff-{{ idx }}" style="display:none">
+      {% if f.old_code %}
+      <div class="code-wrap">
+        <div class="code-label">Before</div>
+        <pre class="code old">{{ f.old_code | e }}</pre>
+      </div>
+      {% endif %}
+      {% if f.new_code %}
+      <div class="code-wrap">
+        <div class="code-label">After</div>
+        <pre class="code new">{{ f.new_code | e }}</pre>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+  </div>
+  {% endfor %}
+
+  <!-- Sticky submit bar -->
+  <div class="sticky-bar">
+    <input class="notes-input" type="text" name="human_notes"
+           placeholder="Notes for the PR (optional)…">
+    <span class="count-badge" id="approve-count">{{ findings|length }} / {{ findings|length }} approved</span>
+    <button type="submit" class="btn btn-success">Open PRs →</button>
+  </div>
+
+</form>
+
+<script>
+  const total = {{ findings|length }};
+  let approved = total;
+
+  function toggleCard(idx, isApproved) {
+    const card = document.getElementById('card-' + idx);
+    card.classList.toggle('approved', isApproved);
+    card.classList.toggle('rejected', !isApproved);
+    approved += isApproved ? 1 : -1;
+    document.getElementById('approve-count').textContent =
+      approved + ' / ' + total + ' approved';
+  }
+
+  function toggleDiff(idx) {
+    const el = document.getElementById('diff-' + idx);
+    const btn = el.previousElementSibling;
+    const hidden = el.style.display === 'none';
+    el.style.display = hidden ? 'block' : 'none';
+    btn.textContent = (hidden ? '▼' : '▶') + ' Show diff';
+  }
+</script>
+{% endblock %}
