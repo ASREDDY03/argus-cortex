@@ -23,7 +23,7 @@ from orchestrator.graph import build_graph
 from memory.long_term import (
     start_run, finish_run, save_findings,
     mark_approved, mark_rejected, mark_pr_opened,
-    get_run_history, init_db, save_pending_review,
+    get_run_history, init_db, save_pending_review, get_stats,
 )
 from config.settings import settings
 
@@ -218,6 +218,175 @@ def run(
 
 
 @app.command()
+def stats():
+    """Show aggregate statistics across all Argus Cortex runs."""
+    init_db()
+    s = get_stats()
+
+    r  = s["runs"]
+    f  = s["findings"]
+
+    total_runs      = r["total_runs"] or 0
+    completed_runs  = r["completed_runs"] or 0
+    total_cost      = r["total_cost"] or 0.0
+    avg_cost        = r["avg_cost"] or 0.0
+    total_tokens_in = r["total_tokens_in"] or 0
+    total_tokens_out= r["total_tokens_out"] or 0
+
+    total_findings  = f["total"] or 0
+    approved        = f["total_approved"] or 0
+    rejected        = f["total_rejected"] or 0
+    prs_opened      = f["total_prs_opened"] or 0
+    approval_rate   = int(approved / max(approved + rejected, 1) * 100)
+
+    pr_outcomes     = s["pr_outcomes"]
+    merged          = pr_outcomes.get("merged", 0)
+    merge_rate      = int(merged / max(prs_opened, 1) * 100) if prs_opened else 0
+
+    trend           = s["trend"]
+    last_7d         = trend["last_7d"] or 0.0
+    prev_7d         = trend["prev_7d"] or 0.0
+    runs_last_7d    = trend["runs_last_7d"] or 0
+
+    if total_runs == 0:
+        console.print("[dim]No runs yet — start with: python main.py run \"goal\"[/dim]")
+        return
+
+    # ── Header panel ─────────────────────────────────────────────────────────
+    console.print(Panel(
+        f"[bold cyan]Argus Cortex[/bold cyan]  [dim]·[/dim]  "
+        f"[bold]{total_runs}[/bold] run(s)  [dim]·[/dim]  "
+        f"[bold]{total_findings}[/bold] finding(s)  [dim]·[/dim]  "
+        f"[bold]${total_cost:.4f}[/bold] total cost",
+        border_style="cyan",
+        title="Stats",
+    ))
+
+    # ── Overall summary ───────────────────────────────────────────────────────
+    summary = Table(show_header=False, box=None, padding=(0, 2))
+    summary.add_column("Key",   style="dim", width=24)
+    summary.add_column("Value", style="bold")
+    summary.add_column("Key2",  style="dim", width=24)
+    summary.add_column("Value2",style="bold")
+
+    summary.add_row("Completed runs",   str(completed_runs),
+                    "Approval rate",    f"{approval_rate}%")
+    summary.add_row("Total findings",   str(total_findings),
+                    "PR merge rate",    f"{merge_rate}% ({merged}/{prs_opened})")
+    summary.add_row("Total cost",       f"${total_cost:.4f}",
+                    "Avg cost / run",   f"${avg_cost:.4f}")
+    summary.add_row("Tokens in",        f"{total_tokens_in:,}",
+                    "Tokens out",       f"{total_tokens_out:,}")
+    if runs_last_7d:
+        delta = last_7d - prev_7d
+        delta_str = f"[green]+${delta:.4f}[/green]" if delta >= 0 else f"[red]-${abs(delta):.4f}[/red]"
+        summary.add_row("Cost last 7d",     f"${last_7d:.4f} ({runs_last_7d} run(s))",
+                        "vs prior 7d",      delta_str)
+
+    console.print("\n[bold]Overall[/bold]")
+    console.print(summary)
+
+    # ── Findings by severity ──────────────────────────────────────────────────
+    console.print("\n[bold]Findings by Severity[/bold]")
+    sev_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    sev_table.add_column("Severity",  width=10)
+    sev_table.add_column("Count",     justify="right", width=7)
+    sev_table.add_column("Bar",       width=16, no_wrap=True)
+    sev_table.add_column("Approved",  justify="right", width=10)
+    sev_table.add_column("Rate",      justify="right", width=7)
+
+    sev_emoji  = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+    sev_color  = {"critical": "red", "high": "orange3", "medium": "yellow", "low": "green"}
+    max_sev    = max((row["total"] for row in s["by_severity"]), default=1)
+
+    for row in s["by_severity"]:
+        sev   = row["severity"]
+        tot   = row["total"] or 0
+        appr  = row["approved"] or 0
+        rate  = int(appr / max(tot, 1) * 100)
+        color = sev_color.get(sev, "white")
+        bar   = _bar(tot, max_sev, width=14)
+        sev_table.add_row(
+            f"{sev_emoji.get(sev, '⚪')} [{color}]{sev}[/{color}]",
+            f"[bold]{tot}[/bold]",
+            f"[{color}]{bar}[/{color}]",
+            str(appr),
+            f"{rate}%",
+        )
+    console.print(sev_table)
+
+    # ── Findings by agent ─────────────────────────────────────────────────────
+    console.print("\n[bold]Findings by Agent[/bold]")
+    agent_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    agent_table.add_column("Agent",    width=26)
+    agent_table.add_column("Found",    justify="right", width=7)
+    agent_table.add_column("Approved", justify="right", width=10)
+    agent_table.add_column("Rejected", justify="right", width=10)
+    agent_table.add_column("Rate",     justify="right", width=7)
+
+    for row in s["by_agent"]:
+        tot  = row["total"] or 0
+        appr = row["approved"] or 0
+        rej  = row["rejected"] or 0
+        rate = int(appr / max(tot, 1) * 100)
+        style = "red" if "security" in row["agent"] else ""
+        agent_table.add_row(
+            f"[{style}]{row['agent']}[/{style}]" if style else row["agent"],
+            str(tot),
+            f"[green]{appr}[/green]",
+            f"[dim]{rej}[/dim]",
+            f"[bold]{rate}%[/bold]",
+        )
+    console.print(agent_table)
+
+    # ── Findings by category ──────────────────────────────────────────────────
+    console.print("\n[bold]Findings by Category[/bold]")
+    cat_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    cat_table.add_column("Category",  width=16)
+    cat_table.add_column("Total",     justify="right", width=7)
+    cat_table.add_column("Bar",       width=18, no_wrap=True)
+    cat_table.add_column("Approved",  justify="right", width=10)
+
+    max_cat = max((row["total"] for row in s["by_category"]), default=1)
+    for row in s["by_category"]:
+        tot  = row["total"] or 0
+        appr = row["approved"] or 0
+        cat_table.add_row(
+            row["category"],
+            str(tot),
+            f"[cyan]{_bar(tot, max_cat, 16)}[/cyan]",
+            str(appr),
+        )
+    console.print(cat_table)
+
+    # ── PR outcomes ───────────────────────────────────────────────────────────
+    if prs_opened:
+        console.print("\n[bold]PR Outcomes[/bold]")
+        pr_parts = []
+        for state_name, color in [("merged", "green"), ("open", "cyan"), ("closed", "dim")]:
+            count = pr_outcomes.get(state_name, 0)
+            if count:
+                pr_parts.append(f"[{color}]{state_name}: {count}[/{color}]")
+        console.print("  " + "  ·  ".join(pr_parts))
+
+    # ── Top flagged files ─────────────────────────────────────────────────────
+    if s["top_files"]:
+        console.print("\n[bold]Most Flagged Files[/bold]")
+        file_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        file_table.add_column("File",     width=40)
+        file_table.add_column("Findings", justify="right", width=10)
+        file_table.add_column("Approved", justify="right", width=10)
+
+        for row in s["top_files"]:
+            from pathlib import Path as _Path
+            short = _Path(row["file"]).name
+            file_table.add_row(short, str(row["total"] or 0), str(row["approved"] or 0))
+        console.print(file_table)
+
+    console.print()
+
+
+@app.command()
 def history():
     """Show recent Argus Cortex runs."""
     init_db()
@@ -249,6 +418,14 @@ def history():
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _SEVERITY_COLOR = {"critical": "red", "high": "orange3", "medium": "yellow", "low": "green"}
+
+
+def _bar(value: int, total: int, width: int = 14) -> str:
+    """Unicode block bar chart — e.g. ████████░░░░"""
+    if total == 0:
+        return "░" * width
+    filled = int(round(value / total * width))
+    return "█" * filled + "░" * (width - filled)
 _GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent"}
 
 # Anthropic pricing (USD per million tokens)
