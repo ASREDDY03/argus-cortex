@@ -7,6 +7,7 @@ import anthropic
 from langsmith import traceable
 from memory.state import CortexState
 from tools.retry import retry_api
+from tools.file_discovery import summarise_discovery
 from config.settings import settings
 
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -85,7 +86,17 @@ def _call_planner(messages: list) -> dict:
 def run_planner(state: CortexState) -> dict:
     """LangGraph node: Planner."""
     goal = state["goal"]
-    messages = [{"role": "user", "content": f"Goal: {goal}\n\nCreate a plan and select the right agents."}]
+
+    # Include discovered file counts so the Planner can make informed focus decisions
+    discovered = state.get("agent_files", {})
+    files_context = (
+        f"\n\nDiscovered files in repo:\n{summarise_discovery(discovered)}"
+        if discovered else ""
+    )
+
+    messages = [{"role": "user", "content": (
+        f"Goal: {goal}{files_context}\n\nCreate a plan and select the right agents."
+    )}]
 
     plan = _call_planner(messages)
 

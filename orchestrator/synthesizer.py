@@ -120,12 +120,16 @@ def run_synthesizer(state: CortexState) -> dict:
     coverage_summary = []
     files_with_findings = {f.get("file", "") for f in findings}
 
+    # Prefer dynamically discovered files; fall back to hardcoded AGENT_DOMAINS
+    agent_files = state.get("agent_files", {})
+
     for agent in agents_that_ran:
-        owned_files = AGENT_DOMAINS.get(agent, [])
+        owned_files = agent_files.get(agent) or AGENT_DOMAINS.get(agent, [])
         covered = [f for f in owned_files if any(f in fw for fw in files_with_findings)]
         uncovered = [f for f in owned_files if not any(f in fw for fw in files_with_findings)]
+        source = "discovered" if agent_files.get(agent) else "fallback"
         coverage_summary.append(
-            f"{agent}: covered={covered or 'none'}, no findings on={uncovered or 'none'}"
+            f"{agent} ({source}): covered={covered or 'none'}, no findings on={uncovered or 'none'}"
         )
 
     findings_text = json.dumps(findings, indent=2)
