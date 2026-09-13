@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 
 from config.settings import settings
 from memory.long_term import get_run_history, init_db
+from tools.slack_tool import notify_run_start
 
 # Ensure logs directory exists
 Path("logs").mkdir(exist_ok=True)
@@ -179,6 +180,7 @@ async def github_webhook(
     goal = _build_goal(payload)
 
     _spawn_run(goal, pusher)
+    notify_run_start(pusher=pusher, goal=goal)
 
     logger.info(f"Run triggered for push by {pusher}")
     return JSONResponse({"triggered": True, "goal": goal, "pusher": pusher})

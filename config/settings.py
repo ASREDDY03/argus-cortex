@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     webhook_secret: str = ""   # GitHub webhook secret (set when registering the webhook)
     webhook_port: int = 8000
 
+    # Slack notifications (Incoming Webhook URL — set in .env to enable)
+    slack_webhook_url: str = ""
+
     # CI validation before opening PR
     ci_validation: bool = True   # set to false to skip CI check and open PR immediately
     ci_timeout: int = 600        # seconds to wait for CI to complete (default 10 min)

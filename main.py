@@ -15,6 +15,7 @@ from rich.prompt import Prompt, Confirm
 from tools.observability import init_tracing
 from tools.github_tool import sync_pr_states
 from tools.file_discovery import discover_files
+from tools.slack_tool import notify_run_complete
 from orchestrator.graph import build_graph
 from memory.long_term import (
     start_run, finish_run, save_findings,
@@ -147,6 +148,21 @@ def run(
 
     _print_results(final_state, thread_id, goal, tracing_enabled)
     finish_run(run_id, state.get("agents_to_run", []))
+
+    # Extract CI summary from PR creator's summary string ("CI: ..." line)
+    summary_text = final_state.get("summary", "")
+    ci_line = next((l for l in summary_text.splitlines() if l.startswith("CI:")), "")
+    ci_summary = ci_line.removeprefix("CI:").strip()
+
+    notify_run_complete(
+        goal=goal,
+        run_id=run_id,
+        approved_findings=state.get("approved_findings", []),
+        agents_used=state.get("agents_to_run", []),
+        pr_urls=final_state.get("pr_urls", []),
+        ci_summary=ci_summary,
+        retry_count=state.get("retry_count", 0),
+    )
 
 
 @app.command()
