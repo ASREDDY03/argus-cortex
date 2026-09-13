@@ -97,6 +97,7 @@ def run(
         "messages": [],
         "error": None,
         "retry_count": 0,
+        "suppressed_count": 0,
         "agent_tokens_in": 0,
         "agent_tokens_out": 0,
         "orch_tokens_in": 0,
@@ -126,10 +127,13 @@ def run(
     # ── Dry-run exit ──────────────────────────────────────────────────────────
     if dry_run:
         cost_usd = _compute_cost(state)
+        suppressed = state.get("suppressed_count", 0)
+        suppressed_line = f"[dim]{suppressed} suppressed as known duplicates[/dim]\n" if suppressed else ""
         console.print(Panel(
             f"[bold yellow]Dry Run Complete[/bold yellow]\n\n"
             f"[green]{len(approved)}[/green] finding(s) would be sent for review\n"
-            f"[dim]{len(state.get('rejected_findings', []))} rejected by Evaluator[/dim]\n\n"
+            f"[dim]{len(state.get('rejected_findings', []))} rejected by Evaluator[/dim]\n"
+            f"{suppressed_line}\n"
             f"Cost so far: [bold]${cost_usd:.4f}[/bold] (LLM calls only — no PR created)\n\n"
             f"[dim]Re-run without --dry-run to open PRs.[/dim]",
             border_style="yellow",
@@ -481,9 +485,13 @@ def _stream_node(node_name: str, output: dict):
                 prefix = "[yellow]📦[/yellow] "
             else:
                 prefix = "[green]✓[/green] "
-            console.print(f"{prefix}{label} — {len(findings)} finding(s): {', '.join(parts)}")
+            suppressed = output.get("suppressed_count", 0)
+            dedup_note = f"  [dim]({suppressed} suppressed as known)[/dim]" if suppressed else ""
+            console.print(f"{prefix}{label} — {len(findings)} finding(s): {', '.join(parts)}{dedup_note}")
         else:
-            console.print(f"[green]✓[/green] {label} — [dim]no findings[/dim]")
+            suppressed = output.get("suppressed_count", 0)
+            dedup_note = f"  [dim]({suppressed} suppressed as known)[/dim]" if suppressed else ""
+            console.print(f"[green]✓[/green] {label} — [dim]no findings[/dim]{dedup_note}")
 
     elif node_name == "synthesizer":
         cross = output.get("cross_cutting_issues", [])
@@ -515,6 +523,7 @@ def _stream_node(node_name: str, output: dict):
             f"[green]{len(approved)} approved[/green]  "
             f"[dim]{len(rejected)} rejected[/dim]"
         )
+
 
 
 def _print_discovery(agent_files: dict):
@@ -649,6 +658,9 @@ def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool
     if summary:
         console.print(Panel(summary, title="Summary", border_style="green"))
 
+    suppressed = state.get("suppressed_count", 0)
+    if suppressed:
+        console.print(f"[dim]{suppressed} finding(s) suppressed as known duplicates (open PR or prior approval)[/dim]")
     if cost_usd > 0:
         console.print(f"[dim]Cost: ${cost_usd:.4f} USD[/dim]")
     console.print(f"\n[dim]Resume this run: python main.py run '{goal}' --thread-id {thread_id}[/dim]")

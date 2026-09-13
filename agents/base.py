@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langsmith import traceable
 from memory.state import AgentFinding
 from memory.long_term import get_past_findings_for_files
+from orchestrator.deduplicator import deduplicate
 from config.settings import settings
 
 # Tool schema — forces the model to return findings in a guaranteed structure.
@@ -186,8 +187,16 @@ class BaseAgent:
             self.files_to_review = discovered
         focus = state.get("agent_focus", {}).get(self.name, "")
         findings, tokens_in, tokens_out = self.analyze(state["goal"], focus=focus)
+
+        # Deduplicate against past findings — suppress issues already reported
+        # with an open PR or approved in a prior run (only suppress active issues;
+        # merged/closed PRs mean the issue may be a regression worth re-reporting).
+        past = get_past_findings_for_files([f["file"] for f in findings if f.get("file")])
+        findings, suppressed = deduplicate(findings, past)
+
         return {
             "findings": findings,
+            "suppressed_count": suppressed,
             "agent_tokens_in": tokens_in,
             "agent_tokens_out": tokens_out,
         }
