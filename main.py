@@ -4,6 +4,9 @@ Argus Cortex — entry point.
 Usage:
   python main.py run "Full audit of Argus Agent"
   python main.py run "Review only the ML service"
+  python main.py run "goal" --dry-run    # preview findings, no PRs
+  python main.py run "goal" --web        # send to web dashboard
+  python main.py run "goal" --auto       # auto-approve all (CI/webhook)
   python main.py history
 """
 import uuid
@@ -34,6 +37,7 @@ def run(
     thread_id: str = typer.Option(None, help="Resume a previous run by thread ID"),
     auto_approve: bool = typer.Option(False, "--auto", help="Skip human review, approve all"),
     web_review: bool = typer.Option(False, "--web", help="Send findings to web dashboard instead of CLI review"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Run agents and show findings but skip review, PRs, and DB writes"),
 ):
     """Run the Argus Cortex agent network."""
 
@@ -58,13 +62,14 @@ def run(
                 pass  # non-blocking — a sync failure must never abort a run
 
     tracing_line = "[green]LangSmith tracing ON[/green]" if tracing_enabled else "[dim]LangSmith tracing OFF (add LANGCHAIN_API_KEY)[/dim]"
+    dry_run_line = "\n[bold yellow]⚡ DRY RUN — no PRs will be opened, no DB writes[/bold yellow]" if dry_run else ""
     console.print(Panel(
         f"[bold cyan]Argus Cortex[/bold cyan]\n"
         f"[dim]Thread: {thread_id}[/dim]\n"
         f"[dim]Run:    {run_id}[/dim]\n"
-        f"{tracing_line}\n\n"
+        f"{tracing_line}{dry_run_line}\n\n"
         f"[bold]Goal:[/bold] {goal}",
-        border_style="cyan"
+        border_style="cyan" if not dry_run else "yellow"
     ))
 
     graph = build_graph()
@@ -114,8 +119,24 @@ def run(
     approved = state.get("approved_findings", [])
     if not approved:
         console.print("[yellow]No findings approved by Evaluator. Nothing to PR.[/yellow]")
-        finish_run(run_id, state.get("agents_to_run", []))
+        if not dry_run:
+            finish_run(run_id, state.get("agents_to_run", []))
         return
+
+    # ── Dry-run exit ──────────────────────────────────────────────────────────
+    if dry_run:
+        cost_usd = _compute_cost(state)
+        console.print(Panel(
+            f"[bold yellow]Dry Run Complete[/bold yellow]\n\n"
+            f"[green]{len(approved)}[/green] finding(s) would be sent for review\n"
+            f"[dim]{len(state.get('rejected_findings', []))} rejected by Evaluator[/dim]\n\n"
+            f"Cost so far: [bold]${cost_usd:.4f}[/bold] (LLM calls only — no PR created)\n\n"
+            f"[dim]Re-run without --dry-run to open PRs.[/dim]",
+            border_style="yellow",
+            title="⚡ DRY RUN",
+        ))
+        return
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Save findings to long-term memory
     save_findings(run_id, state.get("findings", []))
