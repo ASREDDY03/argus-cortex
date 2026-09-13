@@ -59,6 +59,7 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
         "react_agent":         [],
         "infra_agent":         [],
         "observability_agent": [],
+        "jenkins_agent":       [],
     }
 
     for path in root.rglob("*"):
@@ -89,10 +90,14 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
         elif suffix == ".js" and "react-frontend" in rel_str:
             buckets["react_agent"].append(path)
 
-        # --- infra_agent: Docker Compose, Nginx configs, Jenkinsfile ---
+        # --- jenkins_agent: Jenkinsfile (primary) + docker-compose (service context) ---
         elif name == "Jenkinsfile":
-            buckets["infra_agent"].append(path)
+            buckets["jenkins_agent"].append(path)
+
+        # --- infra_agent: Docker Compose, Nginx configs ---
+        # docker-compose also feeds jenkins_agent so it knows which services exist
         elif "docker-compose" in name and suffix in (".yml", ".yaml"):
+            buckets["jenkins_agent"].append(path)
             buckets["infra_agent"].append(path)
         elif suffix in (".conf", ".nginx") and "nginx" in rel_str.lower():
             buckets["infra_agent"].append(path)

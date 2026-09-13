@@ -4,7 +4,7 @@ LangGraph StateGraph — Argus Cortex agent network.
 Full flow:
   planner
     ↓
-  [springboot, ml, react, infra, observability]  ← parallel Generator agents
+  [springboot, ml, react, infra, observability, jenkins]  ← parallel Generator agents
     ↓
   synthesizer  ← cross-cutting analysis + coverage gap detection
     ↓
@@ -18,7 +18,7 @@ Full flow:
                             END
 
 Key LangGraph features used:
-  - Parallel fan-out (planner → 5 agents simultaneously)
+  - Parallel fan-out (planner → 6 agents simultaneously)
   - State merging (findings from all agents merged via reducer)
   - Synthesizer (cross-agent analysis before evaluation)
   - Conditional edges (route based on evaluator output)
@@ -38,6 +38,7 @@ from agents.ml_agent import run_ml_agent
 from agents.react_agent import run_react_agent
 from agents.infra_agent import run_infra_agent
 from agents.observability_agent import run_observability_agent
+from agents.jenkins_agent import run_jenkins_agent
 
 GENERATOR_AGENTS = [
     "springboot_agent",
@@ -45,6 +46,7 @@ GENERATOR_AGENTS = [
     "react_agent",
     "infra_agent",
     "observability_agent",
+    "jenkins_agent",
 ]
 
 
@@ -71,6 +73,7 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("react_agent", run_react_agent)
     builder.add_node("infra_agent", run_infra_agent)
     builder.add_node("observability_agent", run_observability_agent)
+    builder.add_node("jenkins_agent", run_jenkins_agent)
     builder.add_node("synthesizer", run_synthesizer)
     builder.add_node("evaluator", run_evaluator)
     builder.add_node("human_review", run_human_review)

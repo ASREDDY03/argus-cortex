@@ -37,7 +37,7 @@ FINDINGS_TOOL = {
                         "file":          {"type": "string",  "description": "Relative file path"},
                         "line":          {"type": ["integer", "null"], "description": "Line number, or null if not applicable"},
                         "severity":      {"type": "string",  "enum": ["critical", "high", "medium", "low"]},
-                        "category":      {"type": "string",  "enum": ["bug", "security", "performance", "duplication", "style"]},
+                        "category":      {"type": "string",  "enum": ["bug", "security", "performance", "duplication", "style", "enhancement"]},
                         "description":   {"type": "string",  "description": "Specific description of the issue"},
                         "suggested_fix": {"type": "string",  "description": "One-line summary of the fix"},
                         "old_code":      {"type": "string",  "description": "Exact lines to replace, copy-pasted from the file. Empty string if not applicable."},
@@ -68,7 +68,7 @@ Rules:
 _llm = ChatAnthropic(
     model=settings.agent_model,
     api_key=settings.anthropic_api_key,
-    max_tokens=4096,
+    max_tokens=8192,
     max_retries=3,
 )
 _llm_with_tools = _llm.bind_tools(
@@ -81,6 +81,7 @@ class BaseAgent:
     name: str = "base_agent"
     domain: str = ""
     files_to_review: list[str] = []
+    system_prompt: str = AGENT_SYSTEM   # subclasses can override for domain-specific instructions
 
     def read_file(self, relative_path: str) -> str:
         full_path = Path(settings.argus_repo_path) / relative_path
@@ -146,7 +147,7 @@ class BaseAgent:
         messages = [
             SystemMessage(content=[{
                 "type": "text",
-                "text": AGENT_SYSTEM,
+                "text": self.system_prompt,
                 "cache_control": {"type": "ephemeral"},
             }]),
             HumanMessage(content=[

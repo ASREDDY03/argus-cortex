@@ -144,7 +144,7 @@ def run(
         agent = _agent_from_pr_url(url)
         mark_pr_opened(run_id, agent, url)
 
-    _print_results(final_state, thread_id, goal)
+    _print_results(final_state, thread_id, goal, tracing_enabled)
     finish_run(run_id, state.get("agents_to_run", []))
 
 
@@ -176,7 +176,7 @@ def history():
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _SEVERITY_COLOR = {"critical": "red", "high": "orange3", "medium": "yellow", "low": "green"}
-_GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent"}
+_GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent"}
 
 
 def _stream_node(node_name: str, output: dict):
@@ -344,7 +344,7 @@ def _human_review(approved: list[dict]) -> tuple[list[int], str]:
     return indices, notes
 
 
-def _print_results(state: dict, thread_id: str, goal: str):
+def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool = False):
     pr_urls = state.get("pr_urls", [])
     summary = state.get("summary", "")
 
@@ -360,14 +360,14 @@ def _print_results(state: dict, thread_id: str, goal: str):
 
     console.print(f"\n[dim]Resume this run: python main.py run '{goal}' --thread-id {thread_id}[/dim]")
     if tracing_enabled:
-        console.print(f"[dim]LangSmith traces: https://smith.langchain.com/o/projects/{settings.langchain_project}[/dim]\n")
+        console.print(f"[dim]LangSmith traces: https://smith.langchain.com/projects/p/{settings.langchain_project}[/dim]\n")
     else:
         console.print()
 
 
 def _agent_from_pr_url(url: str) -> str:
     """Extract agent name from PR URL (best effort)."""
-    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent"]:
+    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent"]:
         if agent.replace("_", "-") in url or agent in url:
             return agent
     return "unknown"
