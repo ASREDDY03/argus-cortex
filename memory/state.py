@@ -33,6 +33,12 @@ class CortexState(TypedDict):
     # Generator outputs — merged across all agents automatically
     findings: Annotated[List[AgentFinding], lambda a, b: a + b]
 
+    # Synthesizer output (runs after all agents, before Evaluator)
+    cross_cutting_issues: List[str]   # patterns that span multiple agents/domains
+    coverage_gaps: List[str]          # files or areas no agent meaningfully covered
+    synthesis_notes: str              # overall coverage quality summary
+    retry_agents: dict[str, str]      # recommended re-runs: {agent_name: focus}
+
     # Evaluator output
     approved_findings: List[AgentFinding]
     rejected_findings: List[AgentFinding]
