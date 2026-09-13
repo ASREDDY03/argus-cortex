@@ -1,129 +1,107 @@
 """
-GitHub tool — applies code patches and opens PRs on the Argus Agent repo.
+GitHub tool — applies all agent patches to ONE shared branch on Argus Agent repo,
+then opens ONE consolidated draft PR.
 
-PR strategy:
-- One PR per agent domain
-- Branch: cortex/<agent>/<short-uuid>
-- Commits actual patched files (not just summary markdown)
-- PR body includes unified diffs for each change
-- Draft PRs only — nothing merges without human approval
+Flow:
+  1. Create single branch: cortex/run/<run-id>
+  2. Commit all patched files from all agents to that branch
+  3. Open one draft PR with full diff breakdown by agent
+  4. User reviews everything together and merges when satisfied
 """
-import uuid
 import base64
 from datetime import datetime
-from collections import defaultdict
 from github import Github, GithubException
 from tools.diff_generator import apply_patches, PatchResult
 from config.settings import settings
 
 
-def get_github_client() -> Github:
-    return Github(settings.github_token)
-
-
 def get_repo():
-    g = get_github_client()
-    return g.get_repo(f"{settings.github_org}/{settings.argus_repo}")
+    return Github(settings.github_token).get_repo(
+        f"{settings.github_org}/{settings.argus_repo}"
+    )
 
 
-def read_file_from_github(file_path: str) -> tuple[str, str]:
-    """Read a file from the Argus Agent GitHub repo. Returns (content, sha)."""
-    repo = get_repo()
-    try:
-        file = repo.get_contents(file_path)
-        content = base64.b64decode(file.content).decode("utf-8")
-        return content, file.sha
-    except GithubException as e:
-        return f"[Error reading {file_path}: {e}]", ""
-
-
-def create_pr_for_agent(agent_name: str, findings: list[dict], goal: str) -> str | None:
+def create_consolidated_pr(
+    run_id: str,
+    all_findings: list[dict],
+    goal: str,
+    human_notes: str = "",
+) -> str | None:
     """
-    Create a draft PR with actual code changes for a specific agent's findings.
-    Returns the PR URL or None if no pr_ready findings.
+    Commit ALL approved patches from ALL agents onto one branch.
+    Opens a single draft PR. Returns PR URL or None.
     """
-    pr_ready = [f for f in findings if f.get("pr_ready", False)]
+    pr_ready = [f for f in all_findings if f.get("pr_ready", False)]
     if not pr_ready:
         return None
 
-    # Apply patches locally first
-    patch_results = apply_patches(pr_ready)
-    successful_patches = [r for r in patch_results if r.success]
-
     repo = get_repo()
-    short_id = str(uuid.uuid4())[:8]
-    branch_name = f"cortex/{agent_name}/{short_id}"
+    short_id = run_id[:8]
+    branch_name = f"cortex/run/{short_id}"
     base_branch = repo.default_branch
     base_sha = repo.get_branch(base_branch).commit.sha
 
-    # Create branch
+    # Create single shared branch for this run
     repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=base_sha)
 
-    # Commit patched files grouped by file path
-    committed_files: list[str] = []
-    files_by_path = _group_patches_by_file(successful_patches)
+    # Apply all patches locally (sequential per file — handles multi-agent edits to same file)
+    patch_results = apply_patches(pr_ready)
+    successful = [r for r in patch_results if r.success]
 
-    for file_path, final_content in files_by_path.items():
+    # Commit each patched file once (last patch wins per file — apply_patches handles ordering)
+    committed: list[str] = []
+    files_to_commit = _final_content_per_file(successful)
+
+    for file_path, content in files_to_commit.items():
         try:
             existing = repo.get_contents(file_path, ref=base_branch)
             repo.update_file(
                 path=file_path,
-                message=f"cortex({agent_name}): fix {file_path.split('/')[-1]}",
-                content=final_content,
+                message=f"cortex: improve {file_path.split('/')[-1]}",
+                content=content,
                 sha=existing.sha,
                 branch=branch_name,
             )
-            committed_files.append(file_path)
-        except GithubException as e:
-            # If file doesn't exist on GitHub yet, create it
-            try:
-                repo.create_file(
-                    path=file_path,
-                    message=f"cortex({agent_name}): add {file_path.split('/')[-1]}",
-                    content=final_content,
-                    branch=branch_name,
-                )
-                committed_files.append(file_path)
-            except GithubException:
-                pass
+            committed.append(file_path)
+        except GithubException:
+            pass
 
-    # If no patches applied, still commit findings summary
-    if not committed_files:
-        _commit_summary_fallback(repo, branch_name, agent_name, short_id, pr_ready, goal)
+    # If nothing was committed, add a summary file so the PR has content
+    if not committed:
+        _commit_summary(repo, branch_name, short_id, pr_ready, goal)
 
-    # Build PR body with diffs
-    body = _build_pr_body(agent_name, pr_ready, patch_results, goal)
+    body = _build_pr_body(run_id, all_findings, patch_results, goal, human_notes)
+
+    agents_involved = sorted({f.get("agent", "") for f in all_findings})
+    title = f"[Argus Cortex] {len(pr_ready)} improvement(s) across {len(agents_involved)} domain(s) — {short_id}"
 
     pr = repo.create_pull(
-        title=f"[Argus Cortex] {agent_name}: {len(pr_ready)} fix(es) — {short_id}",
+        title=title,
         body=body,
         head=branch_name,
         base=base_branch,
         draft=True,
     )
-
     return pr.html_url
 
 
-def _group_patches_by_file(results: list[PatchResult]) -> dict[str, str]:
-    """Return {file_path: final_patched_content} — last patch per file wins (they were applied sequentially)."""
+def _final_content_per_file(results: list[PatchResult]) -> dict[str, str]:
+    """Last successful patch per file — apply_patches already applied them sequentially."""
     by_file: dict[str, str] = {}
     for r in results:
-        if r.success and r.patched_content:
+        if r.patched_content:
             by_file[r.file_path] = r.patched_content
     return by_file
 
 
-def _commit_summary_fallback(repo, branch_name, agent_name, short_id, findings, goal):
-    """Fallback: commit a markdown summary if no file patches succeeded."""
-    summary_path = f".cortex/findings/{agent_name}/{short_id}.md"
-    lines = [f"# {agent_name} Findings\nGoal: {goal}\nDate: {datetime.utcnow().isoformat()}\n"]
+def _commit_summary(repo, branch_name, short_id, findings, goal):
+    lines = [f"# Argus Cortex Run {short_id}\nGoal: {goal}\n"]
     for f in findings:
         lines.append(f"- [{f.get('severity')}] {f.get('file')} — {f.get('description')}")
     try:
         repo.create_file(
-            path=summary_path,
-            message=f"cortex: {agent_name} findings summary — {short_id}",
+            path=f".cortex/runs/{short_id}.md",
+            message=f"cortex: run {short_id} summary",
             content="\n".join(lines),
             branch=branch_name,
         )
@@ -131,69 +109,80 @@ def _commit_summary_fallback(repo, branch_name, agent_name, short_id, findings, 
         pass
 
 
-def _build_pr_body(agent_name: str, findings: list[dict], patch_results: list[PatchResult], goal: str) -> str:
+def _build_pr_body(
+    run_id: str,
+    findings: list[dict],
+    patch_results: list[PatchResult],
+    goal: str,
+    human_notes: str,
+) -> str:
     severity_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
-
-    successful = sum(1 for r in patch_results if r.success)
-    failed = len(patch_results) - successful
+    pr_ready = [f for f in findings if f.get("pr_ready")]
+    successful_patches = sum(1 for r in patch_results if r.success)
+    agents = sorted({f.get("agent", "") for f in findings})
 
     lines = [
-        f"## Argus Cortex — `{agent_name}`",
+        f"## Argus Cortex — Consolidated Improvement PR",
         f"",
         f"**Goal:** {goal}",
+        f"**Run ID:** `{run_id[:8]}`",
         f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-        f"**Findings:** {len(findings)} | **Patches applied:** {successful} | **Failed:** {failed}",
-        f"",
-        f"---",
-        f"",
-        f"## Changes",
-        f"",
+        f"**Agents:** {', '.join(f'`{a}`' for a in agents)}",
+        f"**Total findings:** {len(findings)} | **Patches applied:** {successful_patches}",
     ]
 
-    # Map patch results back to findings by index
+    if human_notes:
+        lines += [f"**Reviewer notes:** {human_notes}", ""]
+
+    lines += ["", "---", ""]
+
+    # Group findings by agent for readability
+    by_agent: dict[str, list] = {}
+    for f in findings:
+        by_agent.setdefault(f.get("agent", "unknown"), []).append(f)
+
     patch_map = {r.file_path: r for r in patch_results}
 
-    for i, f in enumerate(findings):
-        emoji = severity_emoji.get(f.get("severity", "low"), "⚪")
-        file_path = f.get("file", "")
-        patch = patch_map.get(file_path)
+    for agent_name, agent_findings in by_agent.items():
+        lines += [f"## `{agent_name}`", ""]
 
-        lines += [
-            f"### {i + 1}. {emoji} `{f.get('severity', '').upper()}` — {f.get('category', '')}",
-            f"",
-            f"**File:** `{file_path}`" + (f" (line {f['line']})" if f.get("line") else ""),
-            f"**Issue:** {f.get('description', '')}",
-            f"",
-        ]
+        for i, f in enumerate(agent_findings, 1):
+            emoji = severity_emoji.get(f.get("severity", "low"), "⚪")
+            file_path = f.get("file", "")
+            patch = patch_map.get(file_path)
 
-        if patch and patch.success and patch.unified_diff:
             lines += [
-                f"**Diff:**",
-                f"```diff",
-                patch.unified_diff,
-                f"```",
-                f"",
+                f"### {i}. {emoji} `{f.get('severity', '').upper()}` — {f.get('category', '')}",
+                f"**File:** `{file_path}`" + (f" (line {f['line']})" if f.get("line") else ""),
+                f"**Issue:** {f.get('description', '')}",
+                "",
             ]
-        elif f.get("old_code") and f.get("new_code"):
-            # Patch failed (old_code not found) — still show intended change
-            lines += [
-                f"**Intended change** _(patch could not be applied automatically)_:",
-                f"```diff",
-                f"- {chr(10).join('- ' + l for l in f['old_code'].splitlines())}",
-                f"+ {chr(10).join('+ ' + l for l in f['new_code'].splitlines())}",
-                f"```",
-                f"",
-            ]
-        else:
-            lines += [
-                f"**Suggested fix:** {f.get('suggested_fix', '')}",
-                f"",
-            ]
+
+            if patch and patch.success and patch.unified_diff:
+                lines += [
+                    "**Diff:**",
+                    "```diff",
+                    patch.unified_diff,
+                    "```",
+                    "",
+                ]
+            elif f.get("old_code") and f.get("new_code"):
+                lines += [
+                    "**Intended change** _(could not apply automatically)_:",
+                    "```diff",
+                    "\n".join(f"- {l}" for l in f["old_code"].splitlines()),
+                    "\n".join(f"+ {l}" for l in f["new_code"].splitlines()),
+                    "```",
+                    "",
+                ]
+            else:
+                lines += [f"**Fix:** {f.get('suggested_fix', '')}", ""]
 
     lines += [
         "---",
         "",
-        "> Draft PR generated by [Argus Cortex](https://github.com/ASREDDY03/argus-cortex). Review before merging.",
+        "> Draft PR generated by [Argus Cortex](https://github.com/ASREDDY03/argus-cortex).",
+        "> Verify all changes, then merge when satisfied.",
     ]
 
     return "\n".join(lines)
