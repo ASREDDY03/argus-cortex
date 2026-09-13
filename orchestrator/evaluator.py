@@ -77,8 +77,27 @@ def run_evaluator(state: CortexState) -> dict:
             "evaluation_notes": "No findings to evaluate.",
         }
 
+    # Include Synthesizer output so cross-cutting patterns influence scoring
+    synthesis_parts = []
+    cross_cutting = state.get("cross_cutting_issues", [])
+    coverage_gaps = state.get("coverage_gaps", [])
+    synthesis_notes = state.get("synthesis_notes", "")
+
+    if cross_cutting:
+        synthesis_parts.append("Cross-cutting patterns identified by Synthesizer:\n" +
+                               "\n".join(f"- {c}" for c in cross_cutting))
+    if coverage_gaps:
+        synthesis_parts.append("Coverage gaps flagged by Synthesizer:\n" +
+                               "\n".join(f"- {g}" for g in coverage_gaps))
+    if synthesis_notes:
+        synthesis_parts.append(f"Synthesizer summary: {synthesis_notes}")
+
+    synthesis_context = ("\n\n" + "\n\n".join(synthesis_parts)) if synthesis_parts else ""
+
     findings_text = json.dumps(findings, indent=2)
-    messages = [{"role": "user", "content": f"Evaluate these {len(findings)} findings:\n\n{findings_text}"}]
+    messages = [{"role": "user", "content": (
+        f"Evaluate these {len(findings)} findings:{synthesis_context}\n\n{findings_text}"
+    )}]
 
     result = _call_evaluator(messages)
 

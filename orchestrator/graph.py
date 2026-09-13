@@ -6,6 +6,8 @@ Full flow:
     ↓
   [springboot, ml, react, infra, observability]  ← parallel Generator agents
     ↓
+  synthesizer  ← cross-cutting analysis + coverage gap detection
+    ↓
   evaluator
     ↓ (conditional)
   ┌─ no approved findings → END
@@ -18,6 +20,7 @@ Full flow:
 Key LangGraph features used:
   - Parallel fan-out (planner → 5 agents simultaneously)
   - State merging (findings from all agents merged via reducer)
+  - Synthesizer (cross-agent analysis before evaluation)
   - Conditional edges (route based on evaluator output)
   - interrupt_before=["human_review"] (pause for human approval)
   - SqliteSaver checkpointing (durable, survives crashes, resumable)
@@ -26,6 +29,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from memory.state import CortexState
 from orchestrator.planner import run_planner
+from orchestrator.synthesizer import run_synthesizer
 from orchestrator.evaluator import run_evaluator
 from orchestrator.human_review import run_human_review
 from orchestrator.pr_creator import run_pr_creator
@@ -34,6 +38,14 @@ from agents.ml_agent import run_ml_agent
 from agents.react_agent import run_react_agent
 from agents.infra_agent import run_infra_agent
 from agents.observability_agent import run_observability_agent
+
+GENERATOR_AGENTS = [
+    "springboot_agent",
+    "ml_agent",
+    "react_agent",
+    "infra_agent",
+    "observability_agent",
+]
 
 
 def _route_after_evaluator(state: CortexState) -> str:
@@ -59,6 +71,7 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("react_agent", run_react_agent)
     builder.add_node("infra_agent", run_infra_agent)
     builder.add_node("observability_agent", run_observability_agent)
+    builder.add_node("synthesizer", run_synthesizer)
     builder.add_node("evaluator", run_evaluator)
     builder.add_node("human_review", run_human_review)
     builder.add_node("pr_creator", run_pr_creator)
@@ -67,12 +80,17 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.set_entry_point("planner")
 
     # --- Planner → all Generator agents (parallel fan-out) ---
-    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent"]:
+    for agent in GENERATOR_AGENTS:
         builder.add_edge("planner", agent)
 
-    # --- All Generator agents → Evaluator (fan-in, state merger handles combining findings) ---
-    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent"]:
-        builder.add_edge(agent, "evaluator")
+    # --- All Generator agents → Synthesizer (fan-in) ---
+    # Synthesizer sees the full merged findings before Evaluator scores them
+    for agent in GENERATOR_AGENTS:
+        builder.add_edge(agent, "synthesizer")
+
+    # --- Synthesizer → Evaluator ---
+    # Evaluator receives synthesis context alongside the findings
+    builder.add_edge("synthesizer", "evaluator")
 
     # --- Evaluator → conditional routing ---
     builder.add_conditional_edges(

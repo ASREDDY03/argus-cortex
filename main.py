@@ -70,6 +70,10 @@ def run(
         "agents_to_run": [],
         "agent_focus": {},
         "findings": [],
+        "cross_cutting_issues": [],
+        "coverage_gaps": [],
+        "synthesis_notes": "",
+        "retry_agents": {},
         "approved_findings": [],
         "rejected_findings": [],
         "evaluation_notes": "",
@@ -88,6 +92,7 @@ def run(
         state = graph.invoke(initial_state, config=config)
 
     _print_plan(state)
+    _print_synthesis(state)
     _print_findings_table(state)
 
     approved = state.get("approved_findings", [])
@@ -167,6 +172,36 @@ def _print_plan(state: dict):
         console.print("\n[bold yellow]Plan[/bold yellow]")
         for i, step in enumerate(plan, 1):
             console.print(f"  {i}. {step}")
+
+
+def _print_synthesis(state: dict):
+    cross = state.get("cross_cutting_issues", [])
+    gaps = state.get("coverage_gaps", [])
+    notes = state.get("synthesis_notes", "")
+    retry = state.get("retry_agents", {})
+
+    if not (cross or gaps or notes):
+        return
+
+    console.print("\n[bold magenta]Synthesizer[/bold magenta]")
+
+    if notes:
+        console.print(f"  [dim]{notes}[/dim]")
+
+    if cross:
+        console.print("\n  [bold]Cross-cutting patterns[/bold]")
+        for c in cross:
+            console.print(f"  [magenta]•[/magenta] {c}")
+
+    if gaps:
+        console.print("\n  [bold]Coverage gaps[/bold]")
+        for g in gaps:
+            console.print(f"  [yellow]•[/yellow] {g}")
+
+    if retry:
+        console.print("\n  [bold]Recommended re-runs[/bold]")
+        for agent, focus in retry.items():
+            console.print(f"  [cyan]↻[/cyan] {agent}: {focus}")
 
 
 def _print_findings_table(state: dict):
