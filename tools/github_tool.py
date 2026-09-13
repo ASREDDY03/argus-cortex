@@ -9,6 +9,7 @@ Flow:
   4. User reviews everything together and merges when satisfied
 """
 import logging
+import time
 import base64
 from datetime import datetime
 from github import Github, GithubException
@@ -72,19 +73,97 @@ def sync_pr_states() -> int:
     return updated
 
 
+def wait_for_ci(repo, branch_name: str) -> dict:
+    """
+    Poll GitHub Actions workflow runs on branch_name until all complete.
+
+    Returns:
+      {
+        "skipped":  bool  — True if no workflows found (no CI configured)
+        "passed":   bool  — True if all checks concluded with 'success'
+        "summary":  str   — e.g. "3/3 checks passed" or "1/3 checks failed: build"
+        "checks":   list  — [{"name": str, "conclusion": str, "url": str}]
+      }
+
+    Waits up to settings.ci_timeout seconds total.
+    Polls every 20s after an initial 30s grace period for runs to appear.
+    """
+    timeout = settings.ci_timeout
+    deadline = time.time() + timeout
+
+    # Give GitHub Actions up to 30s to register the workflow run after the push
+    logger.info(f"[ci] Waiting for CI runs to appear on branch '{branch_name}'...")
+    runs = []
+    appear_deadline = time.time() + 30
+    while time.time() < appear_deadline:
+        runs = list(repo.get_workflow_runs(branch=branch_name, event="push"))
+        if runs:
+            break
+        time.sleep(5)
+
+    if not runs:
+        logger.info("[ci] No workflow runs found — CI not configured, proceeding without validation.")
+        return {"skipped": True, "passed": True, "summary": "No CI configured — skipped", "checks": []}
+
+    logger.info(f"[ci] Found {len(runs)} workflow run(s) — polling for completion (timeout: {timeout}s)...")
+
+    # Poll until all runs complete or timeout
+    while time.time() < deadline:
+        run_ids = [r.id for r in runs]
+        runs = [repo.get_workflow_run(rid) for rid in run_ids]  # refresh from GitHub
+
+        pending = [r for r in runs if r.status not in ("completed", "cancelled")]
+        if not pending:
+            break
+
+        remaining = int(deadline - time.time())
+        logger.info(f"[ci] {len(pending)} run(s) still in progress — {remaining}s remaining...")
+        time.sleep(20)
+
+    # Collect final results
+    checks = []
+    for run in runs:
+        run = repo.get_workflow_run(run.id)  # final refresh
+        checks.append({
+            "name":       run.name,
+            "conclusion": run.conclusion or "timed_out",
+            "url":        run.html_url,
+        })
+
+    passed_count = sum(1 for c in checks if c["conclusion"] == "success")
+    all_passed = passed_count == len(checks)
+
+    failed_names = [c["name"] for c in checks if c["conclusion"] != "success"]
+    if all_passed:
+        summary = f"{passed_count}/{len(checks)} CI check(s) passed"
+    else:
+        summary = f"{passed_count}/{len(checks)} passed — failed: {', '.join(failed_names)}"
+
+    logger.info(f"[ci] {summary}")
+    return {"skipped": False, "passed": all_passed, "summary": summary, "checks": checks}
+
+
 def create_consolidated_pr(
     run_id: str,
     all_findings: list[dict],
     goal: str,
     human_notes: str = "",
-) -> str | None:
+) -> dict:
     """
-    Commit ALL approved patches from ALL agents onto one branch.
-    Opens a single draft PR. Returns PR URL or None.
+    Commit ALL approved patches from ALL agents onto one branch,
+    validate CI passes, then open a single draft PR.
+
+    Returns:
+      {
+        "pr_url":     str | None  — PR URL if opened, None otherwise
+        "ci_passed":  bool | None — True/False/None (None = no CI configured)
+        "ci_summary": str         — human-readable CI result
+        "ci_checks":  list        — per-check results
+      }
     """
     pr_ready = [f for f in all_findings if f.get("pr_ready", False)]
     if not pr_ready:
-        return None
+        return {"pr_url": None, "ci_passed": None, "ci_summary": "", "ci_checks": []}
 
     repo = get_repo()
     short_id = run_id[:8]
@@ -121,7 +200,25 @@ def create_consolidated_pr(
     if not committed:
         _commit_summary(repo, branch_name, short_id, pr_ready, goal)
 
-    body = _build_pr_body(run_id, all_findings, patch_results, goal, human_notes)
+    # ── CI Validation ─────────────────────────────────────────────────────────
+    ci_result = {"skipped": True, "passed": True, "summary": "CI validation disabled", "checks": []}
+
+    if settings.ci_validation:
+        ci_result = wait_for_ci(repo, branch_name)
+
+    ci_passed = None if ci_result["skipped"] else ci_result["passed"]
+
+    if not ci_result["passed"]:
+        logger.warning(f"[ci] CI failed on branch '{branch_name}' — PR not opened.")
+        return {
+            "pr_url":     None,
+            "ci_passed":  False,
+            "ci_summary": ci_result["summary"],
+            "ci_checks":  ci_result["checks"],
+        }
+    # ──────────────────────────────────────────────────────────────────────────
+
+    body = _build_pr_body(run_id, all_findings, patch_results, goal, human_notes, ci_result)
 
     agents_involved = sorted({f.get("agent", "") for f in all_findings})
     title = f"[Argus Cortex] {len(pr_ready)} improvement(s) across {len(agents_involved)} domain(s) — {short_id}"
@@ -133,7 +230,12 @@ def create_consolidated_pr(
         base=base_branch,
         draft=True,
     )
-    return pr.html_url
+    return {
+        "pr_url":     pr.html_url,
+        "ci_passed":  ci_passed,
+        "ci_summary": ci_result["summary"],
+        "ci_checks":  ci_result["checks"],
+    }
 
 
 def _final_content_per_file(results: list[PatchResult]) -> dict[str, str]:
@@ -166,6 +268,7 @@ def _build_pr_body(
     patch_results: list[PatchResult],
     goal: str,
     human_notes: str,
+    ci_result: dict | None = None,
 ) -> str:
     severity_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
     pr_ready = [f for f in findings if f.get("pr_ready")]
@@ -184,6 +287,15 @@ def _build_pr_body(
 
     if human_notes:
         lines += [f"**Reviewer notes:** {human_notes}", ""]
+
+    # CI validation result
+    if ci_result and not ci_result.get("skipped"):
+        ci_emoji = "✅" if ci_result.get("passed") else "❌"
+        lines += [f"**CI:** {ci_emoji} {ci_result.get('summary', '')}"]
+        for check in ci_result.get("checks", []):
+            c_emoji = "✅" if check["conclusion"] == "success" else "❌"
+            lines.append(f"  - {c_emoji} [{check['name']}]({check['url']}) — {check['conclusion']}")
+        lines += [""]
 
     lines += ["", "---", ""]
 
