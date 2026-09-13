@@ -60,6 +60,7 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
         "infra_agent":         [],
         "observability_agent": [],
         "jenkins_agent":       [],
+        "security_agent":      [],
     }
 
     for path in root.rglob("*"):
@@ -77,30 +78,42 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
         name = path.name
 
         # --- springboot_agent: Java source files ---
+        # security_agent also gets Java controllers/services (primary attack surface)
         if suffix == ".java":
             buckets["springboot_agent"].append(path)
+            if any(kw in name for kw in ("Controller", "Service", "Security", "Config", "Auth", "Filter")):
+                buckets["security_agent"].append(path)
 
         # --- ml_agent: Python files inside the ML service directory ---
+        # security_agent also gets Python app files (Flask endpoints, subprocess usage)
         elif suffix == ".py" and "ml-service" in rel_str:
             buckets["ml_agent"].append(path)
+            buckets["security_agent"].append(path)
 
         # --- react_agent: JSX/TSX anywhere + JS files inside the React frontend ---
+        # security_agent gets JS service files (token storage, API calls)
         elif suffix in (".jsx", ".tsx"):
             buckets["react_agent"].append(path)
         elif suffix == ".js" and "react-frontend" in rel_str:
             buckets["react_agent"].append(path)
+            if any(kw in name.lower() for kw in ("service", "auth", "api", "token")):
+                buckets["security_agent"].append(path)
 
         # --- jenkins_agent: Jenkinsfile (primary) + docker-compose (service context) ---
+        # security_agent also gets Jenkinsfile (credentials handling in CI)
         elif name == "Jenkinsfile":
             buckets["jenkins_agent"].append(path)
+            buckets["security_agent"].append(path)
 
         # --- infra_agent: Docker Compose, Nginx configs ---
-        # docker-compose also feeds jenkins_agent so it knows which services exist
+        # Both also feed security_agent (exposed ports, missing headers)
         elif "docker-compose" in name and suffix in (".yml", ".yaml"):
             buckets["jenkins_agent"].append(path)
             buckets["infra_agent"].append(path)
+            buckets["security_agent"].append(path)
         elif suffix in (".conf", ".nginx") and "nginx" in rel_str.lower():
             buckets["infra_agent"].append(path)
+            buckets["security_agent"].append(path)
 
         # --- observability_agent: Prometheus, Alertmanager, Grafana YAML ---
         elif suffix in (".yml", ".yaml") and any(
