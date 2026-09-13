@@ -1,10 +1,9 @@
 """
-PR Creator node — runs after Evaluator.
-Groups approved findings by agent, opens one draft PR per agent domain.
+PR Creator node — runs after Human Review.
+Sends ALL approved findings from ALL agents to ONE consolidated branch + PR.
 """
-from collections import defaultdict
 from memory.state import CortexState
-from tools.github_tool import create_pr_for_agent
+from tools.github_tool import create_consolidated_pr
 from rich.console import Console
 
 console = Console()
@@ -14,10 +13,12 @@ def run_pr_creator(state: CortexState) -> dict:
     """LangGraph node: PR Creator."""
     approved = state.get("approved_findings", [])
     goal = state.get("goal", "")
+    run_id = state.get("run_id", "unknown")
+    human_notes = state.get("human_notes", "")
 
     if not approved:
-        console.print("[yellow]No approved findings — no PRs to open.[/yellow]")
-        return {"pr_urls": [], "summary": "No findings approved by Evaluator."}
+        console.print("[yellow]No approved findings — no PR to open.[/yellow]")
+        return {"pr_urls": [], "summary": "No findings approved."}
 
     if not _github_configured():
         console.print("[yellow]GITHUB_TOKEN not set — skipping PR creation.[/yellow]")
@@ -26,39 +27,30 @@ def run_pr_creator(state: CortexState) -> dict:
             "summary": f"{len(approved)} findings approved but GITHUB_TOKEN not configured.",
         }
 
-    # Group findings by agent
-    by_agent: dict[str, list] = defaultdict(list)
-    for finding in approved:
-        by_agent[finding["agent"]].append(finding)
+    agents = sorted({f.get("agent", "") for f in approved})
+    pr_ready_count = sum(1 for f in approved if f.get("pr_ready"))
 
-    pr_urls = []
-    for agent_name, findings in by_agent.items():
-        console.print(f"[cyan]Opening PR for {agent_name} ({len(findings)} findings)...[/cyan]")
-        try:
-            url = create_pr_for_agent(agent_name, findings, goal)
-            if url:
-                pr_urls.append(url)
-                console.print(f"[green]✓ PR opened: {url}[/green]")
-            else:
-                console.print(f"[dim]{agent_name}: no pr_ready findings, skipped.[/dim]")
-        except Exception as e:
-            console.print(f"[red]✗ Failed to open PR for {agent_name}: {e}[/red]")
+    console.print(f"[cyan]Creating consolidated branch for {len(agents)} agent(s), {pr_ready_count} patch(es)...[/cyan]")
 
-    summary = _build_summary(approved, pr_urls)
-    return {"pr_urls": pr_urls, "summary": summary}
+    try:
+        url = create_consolidated_pr(run_id, approved, goal, human_notes)
+        if url:
+            console.print(f"[green]✓ Consolidated PR opened: {url}[/green]")
+            summary = (
+                f"Argus Cortex completed.\n"
+                f"Approved findings: {len(approved)}\n"
+                f"Agents: {', '.join(agents)}\n"
+                f"PR: {url}"
+            )
+            return {"pr_urls": [url], "summary": summary}
+        else:
+            console.print("[yellow]No pr_ready findings — no PR opened.[/yellow]")
+            return {"pr_urls": [], "summary": "No pr_ready findings to commit."}
+    except Exception as e:
+        console.print(f"[red]✗ Failed to open PR: {e}[/red]")
+        return {"pr_urls": [], "summary": f"PR creation failed: {e}"}
 
 
 def _github_configured() -> bool:
     from config.settings import settings
     return bool(settings.github_token)
-
-
-def _build_summary(approved: list, pr_urls: list) -> str:
-    lines = [
-        f"Argus Cortex completed.",
-        f"Approved findings: {len(approved)}",
-        f"PRs opened: {len(pr_urls)}",
-    ]
-    for url in pr_urls:
-        lines.append(f"  → {url}")
-    return "\n".join(lines)
