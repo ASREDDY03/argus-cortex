@@ -29,13 +29,16 @@ def init_db():
     with _conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS runs (
-                id          TEXT PRIMARY KEY,
-                thread_id   TEXT NOT NULL,
-                goal        TEXT NOT NULL,
-                agents_run  TEXT,
-                status      TEXT DEFAULT 'running',
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-                finished_at DATETIME
+                id           TEXT PRIMARY KEY,
+                thread_id    TEXT NOT NULL,
+                goal         TEXT NOT NULL,
+                agents_run   TEXT,
+                status       TEXT DEFAULT 'running',
+                tokens_in    INTEGER DEFAULT 0,
+                tokens_out   INTEGER DEFAULT 0,
+                cost_usd     REAL DEFAULT 0.0,
+                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at  DATETIME
             );
 
             CREATE TABLE IF NOT EXISTS findings (
@@ -57,11 +60,17 @@ def init_db():
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
         """)
-        # Migration: add pr_state to existing DBs that pre-date this column
-        try:
-            conn.execute("ALTER TABLE findings ADD COLUMN pr_state TEXT")
-        except Exception:
-            pass  # column already exists
+        # Migrations: add columns to existing DBs that pre-date them
+        for migration in [
+            "ALTER TABLE findings ADD COLUMN pr_state TEXT",
+            "ALTER TABLE runs ADD COLUMN tokens_in INTEGER DEFAULT 0",
+            "ALTER TABLE runs ADD COLUMN tokens_out INTEGER DEFAULT 0",
+            "ALTER TABLE runs ADD COLUMN cost_usd REAL DEFAULT 0.0",
+        ]:
+            try:
+                conn.execute(migration)
+            except Exception:
+                pass  # column already exists
 
 
 def start_run(thread_id: str, goal: str) -> str:
@@ -76,11 +85,14 @@ def start_run(thread_id: str, goal: str) -> str:
     return run_id
 
 
-def finish_run(run_id: str, agents_run: list[str]):
+def finish_run(run_id: str, agents_run: list[str], tokens_in: int = 0, tokens_out: int = 0, cost_usd: float = 0.0):
     with _conn() as conn:
         conn.execute(
-            "UPDATE runs SET status='completed', agents_run=?, finished_at=? WHERE id=?",
-            (",".join(agents_run), datetime.utcnow().isoformat(), run_id),
+            """UPDATE runs
+               SET status='completed', agents_run=?, finished_at=?,
+                   tokens_in=?, tokens_out=?, cost_usd=?
+               WHERE id=?""",
+            (",".join(agents_run), datetime.utcnow().isoformat(), tokens_in, tokens_out, cost_usd, run_id),
         )
 
 

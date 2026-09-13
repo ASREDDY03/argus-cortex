@@ -91,6 +91,10 @@ def run(
         "messages": [],
         "error": None,
         "retry_count": 0,
+        "agent_tokens_in": 0,
+        "agent_tokens_out": 0,
+        "orch_tokens_in": 0,
+        "orch_tokens_out": 0,
     }
 
     # ── Phase 1: Stream until interrupt (planner → agents → synthesizer → evaluator) ──
@@ -146,8 +150,16 @@ def run(
         agent = _agent_from_pr_url(url)
         mark_pr_opened(run_id, agent, url)
 
-    _print_results(final_state, thread_id, goal, tracing_enabled)
-    finish_run(run_id, state.get("agents_to_run", []))
+    # Compute cost from accumulated token counts
+    cost_usd = _compute_cost(state)
+    _print_results(final_state, thread_id, goal, tracing_enabled, cost_usd)
+    finish_run(
+        run_id,
+        state.get("agents_to_run", []),
+        tokens_in=state.get("agent_tokens_in", 0) + state.get("orch_tokens_in", 0),
+        tokens_out=state.get("agent_tokens_out", 0) + state.get("orch_tokens_out", 0),
+        cost_usd=cost_usd,
+    )
 
     # Extract CI summary from PR creator's summary string ("CI: ..." line)
     summary_text = final_state.get("summary", "")
@@ -162,6 +174,7 @@ def run(
         pr_urls=final_state.get("pr_urls", []),
         ci_summary=ci_summary,
         retry_count=state.get("retry_count", 0),
+        cost_usd=cost_usd,
     )
 
 
@@ -178,13 +191,17 @@ def history():
     table.add_column("Date")
     table.add_column("Goal")
     table.add_column("Status")
+    table.add_column("Cost", justify="right")
     table.add_column("Thread ID")
 
     for r in runs:
+        cost = r.get("cost_usd") or 0.0
+        cost_str = f"${cost:.4f}" if cost else "—"
         table.add_row(
             r["created_at"][:16],
-            r["goal"][:60],
+            r["goal"][:55],
             r["status"],
+            cost_str,
             r["thread_id"][:12] + "...",
         )
     console.print(table)
@@ -194,6 +211,23 @@ def history():
 
 _SEVERITY_COLOR = {"critical": "red", "high": "orange3", "medium": "yellow", "low": "green"}
 _GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent"}
+
+# Anthropic pricing (USD per million tokens)
+_COST_PER_M = {
+    settings.orchestrator_model: {"input": 3.00, "output": 15.00},  # claude-sonnet-4-6
+    settings.agent_model:        {"input": 0.80, "output":  4.00},  # claude-haiku-4-5
+}
+
+
+def _compute_cost(state: dict) -> float:
+    """Compute total run cost from accumulated token counts in state."""
+    sonnet = _COST_PER_M[settings.orchestrator_model]
+    haiku  = _COST_PER_M[settings.agent_model]
+    orch_cost  = (state.get("orch_tokens_in", 0)  * sonnet["input"]  +
+                  state.get("orch_tokens_out", 0) * sonnet["output"]) / 1_000_000
+    agent_cost = (state.get("agent_tokens_in", 0)  * haiku["input"]  +
+                  state.get("agent_tokens_out", 0) * haiku["output"]) / 1_000_000
+    return round(orch_cost + agent_cost, 6)
 
 
 def _stream_node(node_name: str, output: dict):
@@ -374,7 +408,7 @@ def _human_review(approved: list[dict]) -> tuple[list[int], str]:
     return indices, notes
 
 
-def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool = False):
+def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool = False, cost_usd: float = 0.0):
     pr_urls = state.get("pr_urls", [])
     summary = state.get("summary", "")
 
@@ -388,6 +422,8 @@ def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool
     if summary:
         console.print(Panel(summary, title="Summary", border_style="green"))
 
+    if cost_usd > 0:
+        console.print(f"[dim]Cost: ${cost_usd:.4f} USD[/dim]")
     console.print(f"\n[dim]Resume this run: python main.py run '{goal}' --thread-id {thread_id}[/dim]")
     if tracing_enabled:
         console.print(f"[dim]LangSmith traces: https://smith.langchain.com/projects/p/{settings.langchain_project}[/dim]\n")

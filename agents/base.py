@@ -108,15 +108,18 @@ class BaseAgent:
             lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
         return "\n".join(lines)
 
-    def _call_api(self, messages: list) -> dict:
-        """Invoke the LangChain model — auto-traced to LangSmith with full prompt + response."""
+    def _call_api(self, messages: list) -> tuple[dict, int, int]:
+        """Invoke the LangChain model — returns (result, tokens_in, tokens_out)."""
         response = _llm_with_tools.invoke(messages)
+        usage = response.usage_metadata or {}
+        tokens_in  = usage.get("input_tokens", 0)
+        tokens_out = usage.get("output_tokens", 0)
         if response.tool_calls:
-            return response.tool_calls[0]["args"]
-        return {"findings": []}
+            return response.tool_calls[0]["args"], tokens_in, tokens_out
+        return {"findings": []}, tokens_in, tokens_out
 
     @traceable(run_type="chain")
-    def analyze(self, goal: str, focus: str = "") -> list[AgentFinding]:
+    def analyze(self, goal: str, focus: str = "") -> tuple[list[AgentFinding], int, int]:
         """Run agent analysis with long-term memory, prompt caching, and structured output."""
 
         # Read files
@@ -163,8 +166,28 @@ class BaseAgent:
             ]),
         ]
 
-        result = self._call_api(messages)
+        result, tokens_in, tokens_out = self._call_api(messages)
         findings = result.get("findings", [])
         for f in findings:
             f["agent"] = self.name
-        return findings
+        return findings, tokens_in, tokens_out
+
+    def run_node(self, state: "CortexState") -> dict:
+        """
+        Standard LangGraph node implementation shared by all agents.
+        Handles early-return, file discovery, focus, and token tracking.
+        Each agent's run_* function just calls: return AgentClass().run_node(state)
+        """
+        from memory.state import CortexState  # avoid circular at module level
+        if self.name not in state.get("agents_to_run", []):
+            return {"findings": [], "agent_tokens_in": 0, "agent_tokens_out": 0}
+        discovered = state.get("agent_files", {}).get(self.name, [])
+        if discovered:
+            self.files_to_review = discovered
+        focus = state.get("agent_focus", {}).get(self.name, "")
+        findings, tokens_in, tokens_out = self.analyze(state["goal"], focus=focus)
+        return {
+            "findings": findings,
+            "agent_tokens_in": tokens_in,
+            "agent_tokens_out": tokens_out,
+        }

@@ -55,12 +55,15 @@ _llm_with_tools = _llm.bind_tools(
 )
 
 
-def _call_evaluator(messages: list) -> dict:
-    """Invoke the evaluator — auto-traced to LangSmith with full prompt + response."""
+def _call_evaluator(messages: list) -> tuple[dict, int, int]:
+    """Invoke the evaluator — returns (result, tokens_in, tokens_out)."""
     response = _llm_with_tools.invoke(messages)
+    usage = response.usage_metadata or {}
+    tokens_in  = usage.get("input_tokens", 0)
+    tokens_out = usage.get("output_tokens", 0)
     if response.tool_calls:
-        return response.tool_calls[0]["args"]
-    return {}
+        return response.tool_calls[0]["args"], tokens_in, tokens_out
+    return {}, tokens_in, tokens_out
 
 
 @traceable(run_type="chain", name="evaluator")
@@ -104,7 +107,7 @@ def run_evaluator(state: CortexState) -> dict:
         )),
     ]
 
-    result = _call_evaluator(messages)
+    result, tokens_in, tokens_out = _call_evaluator(messages)
 
     approved_indices = result.get("approved", [])
     rejected_indices = result.get("rejected", [])
@@ -113,4 +116,6 @@ def run_evaluator(state: CortexState) -> dict:
         "approved_findings": [findings[i] for i in approved_indices if i < len(findings)],
         "rejected_findings": [findings[i] for i in rejected_indices if i < len(findings)],
         "evaluation_notes": result.get("notes", ""),
+        "orch_tokens_in": tokens_in,
+        "orch_tokens_out": tokens_out,
     }

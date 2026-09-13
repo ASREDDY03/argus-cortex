@@ -79,6 +79,7 @@ def notify_run_complete(
     pr_urls: list[str],
     ci_summary: str = "",
     retry_count: int = 0,
+    cost_usd: float = 0.0,
 ) -> bool:
     """
     Notify Slack that a run has finished.
@@ -171,7 +172,10 @@ def notify_run_complete(
         {
             "type": "context",
             "elements": [
-                {"type": "mrkdwn", "text": f"Completed {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"},
+                {"type": "mrkdwn", "text": (
+                    f"Completed {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+                    + (f"  |  Cost: ${cost_usd:.4f}" if cost_usd else "")
+                )},
             ],
         },
     ]
