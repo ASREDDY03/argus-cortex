@@ -1,16 +1,14 @@
 """
 Planner Agent — claude-sonnet-4-6
 Receives the high-level goal and produces a structured plan.
-Uses tool_use to guarantee schema-valid output — no JSON parsing needed.
+Uses tool_use for schema-valid output. Full prompt/response traced to LangSmith.
 """
-import anthropic
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 from langsmith import traceable
 from memory.state import CortexState
-from tools.retry import retry_api
 from tools.file_discovery import summarise_discovery
 from config.settings import settings
-
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 AVAILABLE_AGENTS = [
     "springboot_agent",
@@ -32,8 +30,6 @@ Available agents:
 - observability_agent: Reviews Prometheus rules, Grafana dashboards, Alertmanager config
 
 Read the user's goal, decide which agents to activate, and call create_plan with your decision."""
-
-SYSTEM_BLOCK = [{"type": "text", "text": PLANNER_SYSTEM, "cache_control": {"type": "ephemeral"}}]
 
 PLAN_TOOL = {
     "name": "create_plan",
@@ -64,21 +60,23 @@ PLAN_TOOL = {
     },
 }
 
+_llm = ChatAnthropic(
+    model=settings.orchestrator_model,
+    api_key=settings.anthropic_api_key,
+    max_tokens=1024,
+    max_retries=3,
+)
+_llm_with_tools = _llm.bind_tools(
+    [PLAN_TOOL],
+    tool_choice={"type": "tool", "name": "create_plan"},
+)
 
-@retry_api
+
 def _call_planner(messages: list) -> dict:
-    """Calls the planner with forced tool_use — returns the parsed plan dict."""
-    response = client.messages.create(
-        model=settings.orchestrator_model,
-        max_tokens=1024,
-        system=SYSTEM_BLOCK,
-        messages=messages,
-        tools=[PLAN_TOOL],
-        tool_choice={"type": "tool", "name": "create_plan"},
-    )
-    for block in response.content:
-        if block.type == "tool_use":
-            return block.input
+    """Invoke the planner — auto-traced to LangSmith with full prompt + response."""
+    response = _llm_with_tools.invoke(messages)
+    if response.tool_calls:
+        return response.tool_calls[0]["args"]
     return {}
 
 
@@ -87,16 +85,22 @@ def run_planner(state: CortexState) -> dict:
     """LangGraph node: Planner."""
     goal = state["goal"]
 
-    # Include discovered file counts so the Planner can make informed focus decisions
     discovered = state.get("agent_files", {})
     files_context = (
         f"\n\nDiscovered files in repo:\n{summarise_discovery(discovered)}"
         if discovered else ""
     )
 
-    messages = [{"role": "user", "content": (
-        f"Goal: {goal}{files_context}\n\nCreate a plan and select the right agents."
-    )}]
+    messages = [
+        SystemMessage(content=[{
+            "type": "text",
+            "text": PLANNER_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }]),
+        HumanMessage(content=(
+            f"Goal: {goal}{files_context}\n\nCreate a plan and select the right agents."
+        )),
+    ]
 
     plan = _call_planner(messages)
 

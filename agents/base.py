@@ -8,22 +8,20 @@ Prompt caching strategy:
   - File contents     → cached (large, rarely change — biggest cost saving)
   - Goal/focus/known  → NOT cached (changes every run)
 
-Retry strategy:
-  - API calls → retried up to 3x with exponential backoff (rate limits, connection errors)
-  - Structured output via tool_use guarantees schema-valid responses — no JSON parsing needed
+LangSmith tracing:
+  - @traceable wraps analyze() as a named chain span
+  - ChatAnthropic auto-traces every LLM call inside it (prompt, response, tokens, cost)
+  - Result: full nested trace visible in LangSmith UI
 """
-import anthropic
 from pathlib import Path
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 from langsmith import traceable
 from memory.state import AgentFinding
 from memory.long_term import get_past_findings_for_files
-from tools.retry import retry_api
 from config.settings import settings
 
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
 # Tool schema — forces the model to return findings in a guaranteed structure.
-# tool_choice={"type": "tool", "name": "report_findings"} means the model MUST call this tool.
 FINDINGS_TOOL = {
     "name": "report_findings",
     "description": "Report all code review findings discovered in the analyzed files.",
@@ -65,6 +63,19 @@ Rules:
 - Do NOT re-report issues listed in the KNOWN ISSUES section
 - Focus on NEW issues not previously found"""
 
+# Module-level model — reused across all agent instances.
+# max_retries=3 handles rate limits and transient errors automatically.
+_llm = ChatAnthropic(
+    model=settings.agent_model,
+    api_key=settings.anthropic_api_key,
+    max_tokens=4096,
+    max_retries=3,
+)
+_llm_with_tools = _llm.bind_tools(
+    [FINDINGS_TOOL],
+    tool_choice={"type": "tool", "name": "report_findings"},
+)
+
 
 class BaseAgent:
     name: str = "base_agent"
@@ -96,20 +107,11 @@ class BaseAgent:
             lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
         return "\n".join(lines)
 
-    @retry_api
-    def _call_api(self, system: list, messages: list) -> dict:
-        """Single API call with forced tool_use — returns the parsed tool input dict."""
-        response = client.messages.create(
-            model=settings.agent_model,
-            max_tokens=4096,
-            system=system,
-            messages=messages,
-            tools=[FINDINGS_TOOL],
-            tool_choice={"type": "tool", "name": "report_findings"},
-        )
-        for block in response.content:
-            if block.type == "tool_use":
-                return block.input
+    def _call_api(self, messages: list) -> dict:
+        """Invoke the LangChain model — auto-traced to LangSmith with full prompt + response."""
+        response = _llm_with_tools.invoke(messages)
+        if response.tool_calls:
+            return response.tool_calls[0]["args"]
         return {"findings": []}
 
     @traceable(run_type="chain")
@@ -141,32 +143,26 @@ class BaseAgent:
             f"Review the files above for NEW issues only."
         )
 
-        system = [
-            {
+        messages = [
+            SystemMessage(content=[{
                 "type": "text",
                 "text": AGENT_SYSTEM,
                 "cache_control": {"type": "ephemeral"},
-            }
+            }]),
+            HumanMessage(content=[
+                {
+                    "type": "text",
+                    "text": files_block,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": dynamic_block,
+                },
+            ]),
         ]
 
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": files_block,
-                        "cache_control": {"type": "ephemeral"},
-                    },
-                    {
-                        "type": "text",
-                        "text": dynamic_block,
-                    },
-                ],
-            }
-        ]
-
-        result = self._call_api(system, messages)
+        result = self._call_api(messages)
         findings = result.get("findings", [])
         for f in findings:
             f["agent"] = self.name
