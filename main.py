@@ -7,6 +7,7 @@ Usage:
   python main.py run "goal" --dry-run    # preview findings, no PRs
   python main.py run "goal" --web        # send to web dashboard
   python main.py run "goal" --auto       # auto-approve all (CI/webhook)
+  python main.py sync-prs               # sync open PR states from GitHub
   python main.py history
 """
 import uuid
@@ -51,15 +52,23 @@ def run(
     agent_files = discover_files()
     _print_discovery(agent_files)
 
-    # Sync PR outcomes from GitHub before agents run so long-term memory is current
+    # Sync PR outcomes from GitHub before agents run so long-term memory is current.
+    # Non-blocking — a sync failure must never abort a run.
     if settings.github_token:
         with console.status("[dim]Syncing PR states from GitHub...[/dim]"):
             try:
                 synced = sync_pr_states()
                 if synced:
-                    console.print(f"[dim]↻ Synced {synced} PR(s) from GitHub[/dim]")
+                    merged  = sum(1 for r in synced if r["state"] == "merged")
+                    closed  = sum(1 for r in synced if r["state"] == "closed")
+                    still_open = sum(1 for r in synced if r["state"] == "open")
+                    parts = []
+                    if merged:     parts.append(f"[green]{merged} merged[/green]")
+                    if closed:     parts.append(f"[dim]{closed} closed[/dim]")
+                    if still_open: parts.append(f"{still_open} still open")
+                    console.print(f"[dim]↻ Synced {len(synced)} PR(s):[/dim] {', '.join(parts)}")
             except Exception:
-                pass  # non-blocking — a sync failure must never abort a run
+                pass
 
     tracing_line = "[green]LangSmith tracing ON[/green]" if tracing_enabled else "[dim]LangSmith tracing OFF (add LANGCHAIN_API_KEY)[/dim]"
     dry_run_line = "\n[bold yellow]⚡ DRY RUN — no PRs will be opened, no DB writes[/bold yellow]" if dry_run else ""
@@ -388,6 +397,70 @@ def stats():
         console.print(file_table)
 
     console.print()
+
+
+@app.command(name="sync-prs")
+def sync_prs():
+    """Sync open Cortex PR states from GitHub and update long-term memory."""
+    init_db()
+
+    if not settings.github_token:
+        console.print("[red]GITHUB_TOKEN not set in .env — cannot reach GitHub.[/red]")
+        raise typer.Exit(1)
+
+    with console.status("[bold cyan]Fetching PR states from GitHub...[/bold cyan]"):
+        results = sync_pr_states()
+
+    if not results:
+        console.print("[dim]No open Cortex PRs found in long-term memory. Nothing to sync.[/dim]")
+        return
+
+    _STATE_STYLE = {
+        "merged": ("green",  "✔ merged"),
+        "closed": ("dim",    "✘ closed"),
+        "open":   ("cyan",   "● open"),
+        "":       ("red",    "! error"),
+    }
+
+    table = Table(title="PR State Sync", show_header=True, header_style="bold cyan", box=None)
+    table.add_column("PR #",   width=6,  justify="right")
+    table.add_column("State",  width=12)
+    table.add_column("Title",  min_width=30)
+    table.add_column("URL",    style="dim")
+
+    merged_count = closed_count = open_count = error_count = 0
+
+    for r in results:
+        state = r["state"]
+        style, label = _STATE_STYLE.get(state, ("red", "! error"))
+        error = r.get("error", "")
+
+        if error:
+            error_count += 1
+            table.add_row("—", f"[red]error[/red]", f"[red]{error[:60]}[/red]", r["pr_url"])
+        else:
+            pr_num = str(r["pr_number"]) if r["pr_number"] else "—"
+            title  = r["title"][:55] + ("…" if len(r["title"]) > 55 else "")
+            table.add_row(pr_num, f"[{style}]{label}[/{style}]", title, r["pr_url"])
+            if state == "merged":  merged_count  += 1
+            elif state == "closed": closed_count += 1
+            else:                   open_count   += 1
+
+    console.print(table)
+
+    # Summary line
+    parts = []
+    if merged_count:  parts.append(f"[green]{merged_count} merged[/green]")
+    if closed_count:  parts.append(f"[dim]{closed_count} closed[/dim]")
+    if open_count:    parts.append(f"[cyan]{open_count} still open[/cyan]")
+    if error_count:   parts.append(f"[red]{error_count} error(s)[/red]")
+    console.print(f"\n[bold]Result:[/bold] {len(results)} PR(s) checked — {', '.join(parts)}")
+
+    if merged_count or closed_count:
+        console.print(
+            "[dim]Merged/closed PRs are now excluded from deduplication — "
+            "agents will report regressions on those files.[/dim]"
+        )
 
 
 @app.command()

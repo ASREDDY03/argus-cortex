@@ -25,23 +25,30 @@ def get_repo():
     )
 
 
-def sync_pr_states() -> int:
+def sync_pr_states() -> list[dict]:
     """
     Check GitHub for the current state of every open Cortex PR and write the
     outcome back to long-term memory.
 
-    Returns the number of PRs whose state was updated.
+    Returns a list of result dicts, one per PR checked:
+      {
+        "pr_url":    str   — full GitHub PR URL
+        "pr_number": int   — PR number
+        "state":     str   — 'open' | 'merged' | 'closed'
+        "title":     str   — PR title
+        "error":     str   — non-empty if the PR could not be fetched
+      }
 
-    PR states written:
+    PR states written to SQLite:
       'open'   — PR is still open / under review
-      'merged' — PR was merged (issue is fixed — agents will skip it)
+      'merged' — PR was merged (issue fixed — deduplicator won't suppress regressions)
       'closed' — PR was closed without merge (fix rejected)
     """
     from memory.long_term import get_findings_with_open_prs, update_pr_state_by_url
 
     rows = get_findings_with_open_prs()
     if not rows:
-        return 0
+        return []
 
     unique_urls: list[str] = list({r["pr_url"] for r in rows})
 
@@ -49,9 +56,10 @@ def sync_pr_states() -> int:
         repo = get_repo()
     except Exception as e:
         logger.warning(f"[sync] Could not connect to GitHub: {e}")
-        return 0
+        return [{"pr_url": url, "pr_number": 0, "state": "", "title": "", "error": str(e)}
+                for url in unique_urls]
 
-    updated = 0
+    results: list[dict] = []
     for url in unique_urls:
         try:
             pr_number = int(url.rstrip("/").split("/")[-1])
@@ -65,12 +73,25 @@ def sync_pr_states() -> int:
                 state = "open"
 
             update_pr_state_by_url(url, state)
-            updated += 1
             logger.info(f"[sync] PR #{pr_number} → {state}")
+            results.append({
+                "pr_url":    url,
+                "pr_number": pr_number,
+                "state":     state,
+                "title":     pr.title,
+                "error":     "",
+            })
         except Exception as e:
             logger.warning(f"[sync] Could not check PR {url}: {e}")
+            results.append({
+                "pr_url":    url,
+                "pr_number": 0,
+                "state":     "",
+                "title":     "",
+                "error":     str(e),
+            })
 
-    return updated
+    return results
 
 
 def wait_for_ci(repo, branch_name: str) -> dict:
