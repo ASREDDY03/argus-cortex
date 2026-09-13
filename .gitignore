@@ -8,3 +8,6 @@ checkpoints/
 *.db
 .DS_Store
 .langchain/
+.idea/
+untitled/
+logs/
