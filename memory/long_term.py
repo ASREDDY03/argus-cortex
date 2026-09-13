@@ -25,7 +25,7 @@ def _conn() -> sqlite3.Connection:
 
 
 def init_db():
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist. Migrates existing DBs forward."""
     with _conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS runs (
@@ -52,10 +52,16 @@ def init_db():
                 approved        INTEGER DEFAULT 0,
                 rejected        INTEGER DEFAULT 0,
                 pr_url          TEXT,
+                pr_state        TEXT,
                 created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
         """)
+        # Migration: add pr_state to existing DBs that pre-date this column
+        try:
+            conn.execute("ALTER TABLE findings ADD COLUMN pr_state TEXT")
+        except Exception:
+            pass  # column already exists
 
 
 def start_run(thread_id: str, goal: str) -> str:
@@ -135,6 +141,7 @@ def get_past_findings_for_files(file_paths: list[str]) -> list[dict]:
     """
     Query past findings for specific files.
     Agents use this to avoid re-reporting already known issues.
+    Includes pr_state so agents know which issues are fixed vs still open.
     """
     init_db()
     if not file_paths:
@@ -143,7 +150,7 @@ def get_past_findings_for_files(file_paths: list[str]) -> list[dict]:
     placeholders = ",".join("?" * len(file_paths))
     with _conn() as conn:
         rows = conn.execute(
-            f"""SELECT agent, file, line, severity, category, description, pr_url
+            f"""SELECT agent, file, line, severity, category, description, pr_url, pr_state
                 FROM findings
                 WHERE file IN ({placeholders})
                 ORDER BY created_at DESC
@@ -151,6 +158,34 @@ def get_past_findings_for_files(file_paths: list[str]) -> list[dict]:
             file_paths,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_findings_with_open_prs() -> list[dict]:
+    """
+    Return all findings that have a PR URL but whose outcome is not yet final.
+    Used by sync_pr_states() to know which PRs to check on GitHub.
+    """
+    init_db()
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT pr_url
+               FROM findings
+               WHERE pr_url IS NOT NULL
+                 AND (pr_state IS NULL OR pr_state = 'open')"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_pr_state_by_url(pr_url: str, state: str):
+    """
+    Set pr_state for every finding linked to this PR URL.
+    state: 'open' | 'merged' | 'closed'
+    """
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE findings SET pr_state=? WHERE pr_url=?",
+            (state, pr_url),
+        )
 
 
 def get_run_history(limit: int = 10) -> list[dict]:

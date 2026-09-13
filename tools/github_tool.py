@@ -8,17 +8,68 @@ Flow:
   3. Open one draft PR with full diff breakdown by agent
   4. User reviews everything together and merges when satisfied
 """
+import logging
 import base64
 from datetime import datetime
 from github import Github, GithubException
 from tools.diff_generator import apply_patches, PatchResult
 from config.settings import settings
 
+logger = logging.getLogger(__name__)
+
 
 def get_repo():
     return Github(settings.github_token).get_repo(
         f"{settings.github_org}/{settings.argus_repo}"
     )
+
+
+def sync_pr_states() -> int:
+    """
+    Check GitHub for the current state of every open Cortex PR and write the
+    outcome back to long-term memory.
+
+    Returns the number of PRs whose state was updated.
+
+    PR states written:
+      'open'   — PR is still open / under review
+      'merged' — PR was merged (issue is fixed — agents will skip it)
+      'closed' — PR was closed without merge (fix rejected)
+    """
+    from memory.long_term import get_findings_with_open_prs, update_pr_state_by_url
+
+    rows = get_findings_with_open_prs()
+    if not rows:
+        return 0
+
+    unique_urls: list[str] = list({r["pr_url"] for r in rows})
+
+    try:
+        repo = get_repo()
+    except Exception as e:
+        logger.warning(f"[sync] Could not connect to GitHub: {e}")
+        return 0
+
+    updated = 0
+    for url in unique_urls:
+        try:
+            pr_number = int(url.rstrip("/").split("/")[-1])
+            pr = repo.get_pull(pr_number)
+
+            if pr.merged:
+                state = "merged"
+            elif pr.state == "closed":
+                state = "closed"
+            else:
+                state = "open"
+
+            update_pr_state_by_url(url, state)
+            updated += 1
+            logger.info(f"[sync] PR #{pr_number} → {state}")
+        except Exception as e:
+            logger.warning(f"[sync] Could not check PR {url}: {e}")
+
+    return updated
 
 
 def create_consolidated_pr(

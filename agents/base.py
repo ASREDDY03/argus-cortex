@@ -82,7 +82,17 @@ class BaseAgent:
             return "None."
         lines = []
         for p in past:
-            status = f"PR: {p['pr_url']}" if p.get("pr_url") else "reported, no PR yet"
+            pr_url = p.get("pr_url")
+            pr_state = p.get("pr_state")
+            if pr_url:
+                if pr_state == "merged":
+                    status = "FIXED — PR merged"
+                elif pr_state == "closed":
+                    status = f"PR closed without merge: {pr_url}"
+                else:
+                    status = f"PR open: {pr_url}"
+            else:
+                status = "reported, no PR yet"
             lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
         return "\n".join(lines)
 

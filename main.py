@@ -13,12 +13,14 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from tools.observability import init_tracing
+from tools.github_tool import sync_pr_states
 from orchestrator.graph import build_graph
 from memory.long_term import (
     start_run, finish_run, save_findings,
     mark_approved, mark_rejected, mark_pr_opened,
     get_run_history, init_db,
 )
+from config.settings import settings
 
 app = typer.Typer()
 console = Console()
@@ -37,6 +39,16 @@ def run(
     thread_id = thread_id or str(uuid.uuid4())
     run_id = start_run(thread_id, goal)
     config = {"configurable": {"thread_id": thread_id}}
+
+    # Sync PR outcomes from GitHub before agents run so long-term memory is current
+    if settings.github_token:
+        with console.status("[dim]Syncing PR states from GitHub...[/dim]"):
+            try:
+                synced = sync_pr_states()
+                if synced:
+                    console.print(f"[dim]↻ Synced {synced} PR(s) from GitHub[/dim]")
+            except Exception:
+                pass  # non-blocking — a sync failure must never abort a run
 
     tracing_line = "[green]LangSmith tracing ON[/green]" if tracing_enabled else "[dim]LangSmith tracing OFF (add LANGCHAIN_API_KEY)[/dim]"
     console.print(Panel(
@@ -239,7 +251,6 @@ def _print_results(state: dict, thread_id: str, goal: str):
 
     console.print(f"\n[dim]Resume this run: python main.py run '{goal}' --thread-id {thread_id}[/dim]")
     if tracing_enabled:
-        from config.settings import settings
         console.print(f"[dim]LangSmith traces: https://smith.langchain.com/o/projects/{settings.langchain_project}[/dim]\n")
     else:
         console.print()
