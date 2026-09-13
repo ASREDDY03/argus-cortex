@@ -426,7 +426,7 @@ def _bar(value: int, total: int, width: int = 14) -> str:
         return "░" * width
     filled = int(round(value / total * width))
     return "█" * filled + "░" * (width - filled)
-_GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent"}
+_GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent", "dependency_agent"}
 
 # Anthropic pricing (USD per million tokens)
 _COST_PER_M = {
@@ -458,7 +458,13 @@ def _stream_node(node_name: str, output: dict):
     elif node_name in _GENERATOR_AGENTS:
         findings = output.get("findings", [])
         is_security = node_name == "security_agent"
-        label = f"[bold red]{node_name}[/bold red]" if is_security else f"[bold]{node_name}[/bold]"
+        is_dependency = node_name == "dependency_agent"
+        if is_security:
+            label = f"[bold red]{node_name}[/bold red]"
+        elif is_dependency:
+            label = f"[bold yellow]{node_name}[/bold yellow]"
+        else:
+            label = f"[bold]{node_name}[/bold]"
         if findings:
             counts: dict[str, int] = {}
             for f in findings:
@@ -469,7 +475,12 @@ def _stream_node(node_name: str, output: dict):
                 for s in ("critical", "high", "medium", "low") if s in counts
                 for c in [counts[s]]
             ]
-            prefix = "[red]🔒[/red] " if is_security else "[green]✓[/green] "
+            if is_security:
+                prefix = "[red]🔒[/red] "
+            elif is_dependency:
+                prefix = "[yellow]📦[/yellow] "
+            else:
+                prefix = "[green]✓[/green] "
             console.print(f"{prefix}{label} — {len(findings)} finding(s): {', '.join(parts)}")
         else:
             console.print(f"[green]✓[/green] {label} — [dim]no findings[/dim]")
@@ -649,7 +660,7 @@ def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool
 
 def _agent_from_pr_url(url: str) -> str:
     """Extract agent name from PR URL (best effort)."""
-    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent"]:
+    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent", "dependency_agent"]:
         if agent.replace("_", "-") in url or agent in url:
             return agent
     return "unknown"

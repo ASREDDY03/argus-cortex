@@ -18,6 +18,7 @@ AVAILABLE_AGENTS = [
     "observability_agent",
     "jenkins_agent",
     "security_agent",
+    "dependency_agent",
 ]
 
 PLANNER_SYSTEM = """You are the Planner for Argus Cortex, an AI agent network that audits and improves the Argus Agent DevOps system.
@@ -32,6 +33,7 @@ Available agents:
 - observability_agent: Reviews Prometheus rules, Grafana dashboards, Alertmanager config
 - jenkins_agent: Reviews AND rewrites the Jenkinsfile — finds issues (missing tests, no parallel stages, hardcoded values) AND generates a complete production-ready replacement pipeline with parallel stages, ML service, health checks, and post{} cleanup
 - security_agent: Cross-cutting OWASP Top 10 scanner — hardcoded secrets, injection, broken auth, missing security headers, exposed ports, sensitive data in logs, XSS, credentials in CI pipeline
+- dependency_agent: Audits pom.xml, requirements.txt, package.json, and Dockerfiles for CVEs, unpinned versions, outdated major/minor releases, and dependency confusion risk
 
 Read the user's goal, decide which agents to activate, and call create_plan with your decision."""
 

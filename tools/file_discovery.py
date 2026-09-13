@@ -61,6 +61,7 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
         "observability_agent": [],
         "jenkins_agent":       [],
         "security_agent":      [],
+        "dependency_agent":    [],
     }
 
     for path in root.rglob("*"):
@@ -106,14 +107,25 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
             buckets["security_agent"].append(path)
 
         # --- infra_agent: Docker Compose, Nginx configs ---
-        # Both also feed security_agent (exposed ports, missing headers)
+        # docker-compose also feeds security_agent (ports) and dependency_agent (image versions)
         elif "docker-compose" in name and suffix in (".yml", ".yaml"):
             buckets["jenkins_agent"].append(path)
             buckets["infra_agent"].append(path)
             buckets["security_agent"].append(path)
+            buckets["dependency_agent"].append(path)
         elif suffix in (".conf", ".nginx") and "nginx" in rel_str.lower():
             buckets["infra_agent"].append(path)
             buckets["security_agent"].append(path)
+
+        # --- dependency_agent: Maven, pip, npm manifests, and Dockerfiles ---
+        elif name == "pom.xml":
+            buckets["dependency_agent"].append(path)
+        elif name == "requirements.txt":
+            buckets["dependency_agent"].append(path)
+        elif name == "package.json" and "node_modules" not in rel_str:
+            buckets["dependency_agent"].append(path)
+        elif name == "Dockerfile":
+            buckets["dependency_agent"].append(path)
 
         # --- observability_agent: Prometheus, Alertmanager, Grafana YAML ---
         elif suffix in (".yml", ".yaml") and any(
