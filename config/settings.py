@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # Web dashboard
     dashboard_port: int = 8001
 
+    # Scheduled runs (APScheduler cron — leave empty to disable)
+    # Examples:  "0 9 * * 1"    every Monday at 09:00
+    #            "0 0 * * *"    every day at midnight
+    #            "0 */6 * * *"  every 6 hours
+    schedule_cron: str = ""
+    schedule_goal: str = "Scheduled full audit — security, CI/CD, code quality, and dependency health"
+
     # Slack notifications (Incoming Webhook URL — set in .env to enable)
     slack_webhook_url: str = ""
 

@@ -29,10 +29,13 @@ import hmac
 import logging
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
 import uvicorn
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
@@ -46,7 +49,47 @@ Path("logs").mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Argus Cortex Webhook", docs_url=None, redoc_url=None)
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+
+_scheduler = BackgroundScheduler(timezone="UTC")
+
+
+def _run_scheduled():
+    """Fired by APScheduler — spawns a Cortex run with the configured goal."""
+    goal = settings.schedule_goal
+    logger.info(f"[scheduler] Firing scheduled run: {goal}")
+    _spawn_run(goal, pusher="scheduler")
+    notify_run_start(pusher="scheduler", goal=goal)
+
+
+def _start_scheduler():
+    if not settings.schedule_cron:
+        logger.info("[scheduler] No SCHEDULE_CRON set — scheduled runs disabled.")
+        return
+    try:
+        trigger = CronTrigger.from_crontab(settings.schedule_cron, timezone="UTC")
+        _scheduler.add_job(_run_scheduled, trigger, id="cortex_scheduled_run", replace_existing=True)
+        _scheduler.start()
+        next_run = _scheduler.get_job("cortex_scheduled_run").next_run_time
+        logger.info(f"[scheduler] Active — cron: '{settings.schedule_cron}' | next run: {next_run}")
+    except Exception as e:
+        logger.error(f"[scheduler] Failed to start — check SCHEDULE_CRON format: {e}")
+
+
+def _stop_scheduler():
+    if _scheduler.running:
+        _scheduler.shutdown(wait=False)
+        logger.info("[scheduler] Stopped.")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    _start_scheduler()
+    yield
+    _stop_scheduler()
+
+
+app = FastAPI(title="Argus Cortex Webhook", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 # ── Signature verification ────────────────────────────────────────────────────
@@ -185,6 +228,23 @@ def recent_runs():
     return {"runs": get_run_history(limit=10)}
 
 
+@app.get("/schedule")
+def schedule_status():
+    """Show current scheduler state and next run time."""
+    if not settings.schedule_cron:
+        return {"enabled": False, "reason": "SCHEDULE_CRON not set in .env"}
+    if not _scheduler.running:
+        return {"enabled": False, "reason": "Scheduler failed to start — check logs"}
+    job = _scheduler.get_job("cortex_scheduled_run")
+    next_run = str(job.next_run_time) if job and job.next_run_time else "unknown"
+    return {
+        "enabled": True,
+        "cron": settings.schedule_cron,
+        "goal": settings.schedule_goal,
+        "next_run_utc": next_run,
+    }
+
+
 @app.post("/webhook", status_code=status.HTTP_200_OK)
 async def github_webhook(
     request: Request,
@@ -227,6 +287,11 @@ async def github_webhook(
 
 if __name__ == "__main__":
     port = settings.webhook_port
+    schedule_line = (
+        f"  Schedule:    {settings.schedule_cron} (UTC)"
+        if settings.schedule_cron
+        else "  Schedule:    disabled (set SCHEDULE_CRON in .env)"
+    )
 
     print(f"""
 ╔══════════════════════════════════════════════════════╗
@@ -235,8 +300,11 @@ if __name__ == "__main__":
 ║  Listening on:  http://localhost:{port}                 ║
 ║  Health check:  http://localhost:{port}/health          ║
 ║  Recent runs:   http://localhost:{port}/runs            ║
+║  Schedule:      http://localhost:{port}/schedule        ║
 ╠══════════════════════════════════════════════════════╣
-║  Next steps:                                         ║
+║  Scheduled runs ({schedule_line.strip()})
+╠══════════════════════════════════════════════════════╣
+║  Webhook setup:                                      ║
 ║  1. ngrok http {port}                                   ║
 ║  2. Copy the https://xxxx.ngrok.io URL               ║
 ║  3. Argus Agent repo → Settings → Webhooks           ║
