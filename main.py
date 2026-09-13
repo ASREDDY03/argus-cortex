@@ -20,7 +20,7 @@ from orchestrator.graph import build_graph
 from memory.long_term import (
     start_run, finish_run, save_findings,
     mark_approved, mark_rejected, mark_pr_opened,
-    get_run_history, init_db,
+    get_run_history, init_db, save_pending_review,
 )
 from config.settings import settings
 
@@ -33,6 +33,7 @@ def run(
     goal: str = typer.Argument(..., help="What you want Argus Cortex to do"),
     thread_id: str = typer.Option(None, help="Resume a previous run by thread ID"),
     auto_approve: bool = typer.Option(False, "--auto", help="Skip human review, approve all"),
+    web_review: bool = typer.Option(False, "--web", help="Send findings to web dashboard instead of CLI review"),
 ):
     """Run the Argus Cortex agent network."""
 
@@ -122,7 +123,24 @@ def run(
     mark_rejected(run_id, state.get("rejected_findings", []))
 
     # ── Phase 2: Human-in-the-loop review ──
-    if auto_approve:
+    if web_review:
+        # Save pending review for the dashboard and exit — dashboard handles Phase 3
+        cost_usd = _compute_cost(state)
+        save_pending_review(
+            run_id=run_id,
+            thread_id=thread_id,
+            goal=goal,
+            approved_findings=approved,
+            agents_run=state.get("agents_to_run", []),
+            cost_usd=cost_usd,
+        )
+        dashboard_url = f"http://localhost:{settings.dashboard_port}/review/{run_id}"
+        console.print(f"\n[bold cyan]→ Review ready:[/bold cyan] {dashboard_url}\n")
+        console.print("[dim]Open the URL in your browser to approve findings and open PRs.[/dim]")
+        console.print("[dim]Start the dashboard with: python dashboard/server.py[/dim]\n")
+        finish_run(run_id, state.get("agents_to_run", []), cost_usd=cost_usd)
+        return
+    elif auto_approve:
         human_approved_indices = list(range(len(approved)))
         human_notes = "Auto-approved"
         console.print("[dim]--auto flag set: skipping human review, approving all.[/dim]")

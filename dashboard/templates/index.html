@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Argus Cortex{% endblock %}
+
+{% block content %}
+
+{% if pending or in_progress %}
+<div class="section-title">Awaiting Review</div>
+
+{% for r in in_progress %}
+<div class="card">
+  <div class="flex-between">
+    <div>
+      <div class="flex" style="margin-bottom:.4rem">
+        <span class="pill pill-processing">⏳ Processing</span>
+        <span class="meta monospace">{{ r.run_id[:8] }}</span>
+      </div>
+      <div style="font-weight:600">{{ r.goal[:90] }}</div>
+      <div class="meta" style="margin-top:.3rem">Started {{ ago(r.created_at) }}</div>
+    </div>
+    <a href="/review/{{ r.run_id }}/result" class="btn btn-ghost">View →</a>
+  </div>
+</div>
+{% endfor %}
+
+{% for r in pending %}
+<div class="card">
+  <div class="flex-between">
+    <div>
+      <div class="flex" style="margin-bottom:.4rem">
+        <span class="pill pill-pending">● Pending</span>
+        <span class="meta monospace">{{ r.run_id[:8] }}</span>
+        {% if r.cost_usd %}<span class="meta">${{ "%.4f"|format(r.cost_usd) }}</span>{% endif %}
+      </div>
+      <div style="font-weight:600;margin-bottom:.3rem">{{ r.goal[:90] }}</div>
+      <div class="meta">
+        {{ ago(r.created_at) }}
+        {% if r.finding_count %}
+          &nbsp;·&nbsp; {{ r.finding_count }} finding(s)
+        {% endif %}
+        {% if r.agents_run %}
+          &nbsp;·&nbsp; {{ r.agents_run.split(',')|length }} agent(s)
+        {% endif %}
+      </div>
+    </div>
+    <a href="/review/{{ r.run_id }}" class="btn btn-primary">Review →</a>
+  </div>
+</div>
+{% endfor %}
+
+<div class="gap"></div>
+{% endif %}
+
+<div class="section-title">Recent Runs</div>
+
+{% if history %}
+<div class="card" style="padding:0;overflow:hidden">
+  <table>
+    <thead>
+      <tr>
+        <th>Run ID</th>
+        <th>Goal</th>
+        <th>Status</th>
+        <th>Cost</th>
+        <th>When</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in history %}
+      <tr>
+        <td class="monospace">{{ r.id[:8] }}</td>
+        <td style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.goal[:80] }}</td>
+        <td>
+          {% if r.status == 'completed' %}
+            <span class="pill pill-completed">✓ Done</span>
+          {% elif r.status == 'running' %}
+            <span class="pill pill-processing">Running</span>
+          {% else %}
+            <span class="pill pill-failed">{{ r.status }}</span>
+          {% endif %}
+        </td>
+        <td class="meta">${{ "%.4f"|format(r.cost_usd or 0) }}</td>
+        <td class="meta">{{ ago(r.created_at) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card"><p class="empty">No runs yet. Start one with <code>python main.py run "goal" --web</code></p></div>
+{% endif %}
+
+{% endblock %}

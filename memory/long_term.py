@@ -9,6 +9,7 @@ Agents query this before analyzing so they:
   1. Don't re-report already-known issues
   2. Get context on what was fixed vs still open
 """
+import json
 import sqlite3
 import uuid
 from datetime import datetime
@@ -39,6 +40,19 @@ def init_db():
                 cost_usd     REAL DEFAULT 0.0,
                 created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
                 finished_at  DATETIME
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_reviews (
+                run_id            TEXT PRIMARY KEY,
+                thread_id         TEXT NOT NULL,
+                goal              TEXT NOT NULL,
+                approved_findings TEXT NOT NULL,
+                agents_run        TEXT,
+                cost_usd          REAL DEFAULT 0.0,
+                status            TEXT DEFAULT 'pending',
+                pr_urls           TEXT,
+                created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_at      DATETIME
             );
 
             CREATE TABLE IF NOT EXISTS findings (
@@ -208,3 +222,65 @@ def get_run_history(limit: int = 10) -> list[dict]:
             "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Dashboard: pending_reviews CRUD ──────────────────────────────────────────
+
+def save_pending_review(
+    run_id: str,
+    thread_id: str,
+    goal: str,
+    approved_findings: list[dict],
+    agents_run: list[str],
+    cost_usd: float = 0.0,
+):
+    """Save an evaluator-approved set of findings awaiting human review in the dashboard."""
+    init_db()
+    with _conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO pending_reviews
+               (run_id, thread_id, goal, approved_findings, agents_run, cost_usd)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (run_id, thread_id, goal, json.dumps(approved_findings),
+             ",".join(agents_run), cost_usd),
+        )
+
+
+def get_pending_review(run_id: str) -> dict | None:
+    """Return a single pending review by run_id, or None if not found."""
+    init_db()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM pending_reviews WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_pending_reviews() -> list[dict]:
+    """Return all reviews ordered by most recent, for the dashboard home page."""
+    init_db()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM pending_reviews ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_pending_review_status(run_id: str, status: str):
+    """Update status: 'pending' | 'processing' | 'completed' | 'failed'."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE pending_reviews SET status = ? WHERE run_id = ?",
+            (status, run_id),
+        )
+
+
+def complete_pending_review(run_id: str, pr_urls: list[str]):
+    """Mark a review as completed and store the resulting PR URLs."""
+    with _conn() as conn:
+        conn.execute(
+            """UPDATE pending_reviews
+               SET status = 'completed', pr_urls = ?, completed_at = ?
+               WHERE run_id = ?""",
+            (json.dumps(pr_urls), datetime.utcnow().isoformat(), run_id),
+        )

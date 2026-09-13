@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     webhook_secret: str = ""   # GitHub webhook secret (set when registering the webhook)
     webhook_port: int = 8000
 
+    # Web dashboard
+    dashboard_port: int = 8001
+
     # Slack notifications (Incoming Webhook URL — set in .env to enable)
     slack_webhook_url: str = ""
 
