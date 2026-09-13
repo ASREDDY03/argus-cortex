@@ -89,6 +89,7 @@ def run(
         "summary": "",
         "messages": [],
         "error": None,
+        "retry_count": 0,
     }
 
     # ── Phase 1: Stream until interrupt (planner → agents → synthesizer → evaluator) ──
@@ -208,13 +209,24 @@ def _stream_node(node_name: str, output: dict):
     elif node_name == "synthesizer":
         cross = output.get("cross_cutting_issues", [])
         gaps = output.get("coverage_gaps", [])
+        retry = output.get("retry_agents", {})
         parts = []
         if cross:
             parts.append(f"{len(cross)} cross-cutting pattern(s)")
         if gaps:
             parts.append(f"{len(gaps)} coverage gap(s)")
+        if retry:
+            parts.append(f"[cyan]↻ recommends retry: {', '.join(retry.keys())}[/cyan]")
         detail = ", ".join(parts) if parts else "no patterns or gaps"
         console.print(f"[green]✓[/green] [bold magenta]Synthesizer[/bold magenta] — {detail}")
+
+    elif node_name == "retry_dispatcher":
+        agents = output.get("agents_to_run", [])
+        count = output.get("retry_count", 1)
+        console.print(
+            f"[cyan]↻[/cyan] [bold cyan]Retry #{count}[/bold cyan] — "
+            f"re-running: {', '.join(agents) if agents else 'none'}"
+        )
 
     elif node_name == "evaluator":
         approved = output.get("approved_findings", [])

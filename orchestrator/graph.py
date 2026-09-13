@@ -4,23 +4,28 @@ LangGraph StateGraph — Argus Cortex agent network.
 Full flow:
   planner
     ↓
-  [springboot, ml, react, infra, observability, jenkins]  ← parallel Generator agents
+  [springboot, ml, react, infra, observability, jenkins]  ← parallel (first pass)
     ↓
   synthesizer  ← cross-cutting analysis + coverage gap detection
-    ↓
-  evaluator
     ↓ (conditional)
-  ┌─ no approved findings → END
-  └─ approved findings → human_review  ← INTERRUPT HERE (human-in-the-loop)
-                              ↓
-                          pr_creator   ← opens draft PRs on GitHub
-                              ↓
-                            END
+  ┌─ retry_agents non-empty AND retry_count < 1 → retry_dispatcher
+  │     ↓  fans out to flagged agents only (second pass)
+  │     ↓  findings merged via reducer (a + b)
+  │     └─→ synthesizer  (second pass, retry_count=1 → always goes to evaluator)
+  └─ otherwise → evaluator
+       ↓ (conditional)
+     ┌─ no approved findings → END
+     └─ approved findings → human_review  ← INTERRUPT HERE
+                                 ↓
+                             pr_creator   ← opens draft PRs on GitHub
+                                 ↓
+                               END
 
 Key LangGraph features used:
   - Parallel fan-out (planner → 6 agents simultaneously)
   - State merging (findings from all agents merged via reducer)
   - Synthesizer (cross-agent analysis before evaluation)
+  - Retry loop (synthesizer → retry_dispatcher → agents → synthesizer, max 1 pass)
   - Conditional edges (route based on evaluator output)
   - interrupt_before=["human_review"] (pause for human approval)
   - SqliteSaver checkpointing (durable, survives crashes, resumable)
@@ -33,6 +38,7 @@ from orchestrator.synthesizer import run_synthesizer
 from orchestrator.evaluator import run_evaluator
 from orchestrator.human_review import run_human_review
 from orchestrator.pr_creator import run_pr_creator
+from orchestrator.retry_dispatcher import run_retry_dispatcher
 from agents.springboot_agent import run_springboot_agent
 from agents.ml_agent import run_ml_agent
 from agents.react_agent import run_react_agent
@@ -48,6 +54,19 @@ GENERATOR_AGENTS = [
     "observability_agent",
     "jenkins_agent",
 ]
+
+
+def _route_after_synthesizer(state: CortexState) -> str:
+    """
+    Conditional edge: after Synthesizer, decide next node.
+    - retry_agents non-empty AND first pass only → retry_dispatcher (agents re-run)
+    - otherwise → evaluator
+    """
+    retry_agents = state.get("retry_agents", {})
+    retry_count = state.get("retry_count", 0)
+    if retry_agents and retry_count < 1:
+        return "retry_dispatcher"
+    return "evaluator"
 
 
 def _route_after_evaluator(state: CortexState) -> str:
@@ -75,6 +94,7 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("observability_agent", run_observability_agent)
     builder.add_node("jenkins_agent", run_jenkins_agent)
     builder.add_node("synthesizer", run_synthesizer)
+    builder.add_node("retry_dispatcher", run_retry_dispatcher)
     builder.add_node("evaluator", run_evaluator)
     builder.add_node("human_review", run_human_review)
     builder.add_node("pr_creator", run_pr_creator)
@@ -91,9 +111,19 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     for agent in GENERATOR_AGENTS:
         builder.add_edge(agent, "synthesizer")
 
-    # --- Synthesizer → Evaluator ---
-    # Evaluator receives synthesis context alongside the findings
-    builder.add_edge("synthesizer", "evaluator")
+    # --- Synthesizer → conditional: retry or evaluate ---
+    # First pass: if synthesizer flagged agents to retry → retry_dispatcher
+    # Second pass (retry_count ≥ 1) or no retries needed → evaluator
+    builder.add_conditional_edges(
+        "synthesizer",
+        _route_after_synthesizer,
+        {"retry_dispatcher": "retry_dispatcher", "evaluator": "evaluator"},
+    )
+
+    # --- retry_dispatcher → all Generator agents (fan-out, only flagged ones actually run) ---
+    # Unflagged agents early-return with {"findings": []} when not in agents_to_run
+    for agent in GENERATOR_AGENTS:
+        builder.add_edge("retry_dispatcher", agent)
 
     # --- Evaluator → conditional routing ---
     builder.add_conditional_edges(
