@@ -58,3 +58,4 @@ class CortexState(TypedDict):
     # Control
     messages: Annotated[list, add_messages]
     error: str | None
+    retry_count: int   # number of retry passes completed (caps at 1 to prevent infinite loops)
