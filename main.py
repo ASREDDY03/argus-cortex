@@ -177,7 +177,7 @@ def history():
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _SEVERITY_COLOR = {"critical": "red", "high": "orange3", "medium": "yellow", "low": "green"}
-_GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent"}
+_GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent"}
 
 
 def _stream_node(node_name: str, output: dict):
@@ -191,20 +191,22 @@ def _stream_node(node_name: str, output: dict):
 
     elif node_name in _GENERATOR_AGENTS:
         findings = output.get("findings", [])
+        is_security = node_name == "security_agent"
+        label = f"[bold red]{node_name}[/bold red]" if is_security else f"[bold]{node_name}[/bold]"
         if findings:
             counts: dict[str, int] = {}
             for f in findings:
                 sev = f.get("severity", "low")
                 counts[sev] = counts.get(sev, 0) + 1
-            # Print in severity order
             parts = [
                 f"[{_SEVERITY_COLOR.get(s, 'white')}]{c} {s}[/{_SEVERITY_COLOR.get(s, 'white')}]"
                 for s in ("critical", "high", "medium", "low") if s in counts
                 for c in [counts[s]]
             ]
-            console.print(f"[green]✓[/green] [bold]{node_name}[/bold] — {len(findings)} finding(s): {', '.join(parts)}")
+            prefix = "[red]🔒[/red] " if is_security else "[green]✓[/green] "
+            console.print(f"{prefix}{label} — {len(findings)} finding(s): {', '.join(parts)}")
         else:
-            console.print(f"[green]✓[/green] [bold]{node_name}[/bold] — [dim]no findings[/dim]")
+            console.print(f"[green]✓[/green] {label} — [dim]no findings[/dim]")
 
     elif node_name == "synthesizer":
         cross = output.get("cross_cutting_issues", [])
@@ -379,7 +381,7 @@ def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool
 
 def _agent_from_pr_url(url: str) -> str:
     """Extract agent name from PR URL (best effort)."""
-    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent"]:
+    for agent in ["springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent", "jenkins_agent", "security_agent"]:
         if agent.replace("_", "-") in url or agent in url:
             return agent
     return "unknown"

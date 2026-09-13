@@ -45,6 +45,7 @@ from agents.react_agent import run_react_agent
 from agents.infra_agent import run_infra_agent
 from agents.observability_agent import run_observability_agent
 from agents.jenkins_agent import run_jenkins_agent
+from agents.security_agent import run_security_agent
 
 GENERATOR_AGENTS = [
     "springboot_agent",
@@ -53,6 +54,7 @@ GENERATOR_AGENTS = [
     "infra_agent",
     "observability_agent",
     "jenkins_agent",
+    "security_agent",
 ]
 
 
@@ -93,6 +95,7 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("infra_agent", run_infra_agent)
     builder.add_node("observability_agent", run_observability_agent)
     builder.add_node("jenkins_agent", run_jenkins_agent)
+    builder.add_node("security_agent", run_security_agent)
     builder.add_node("synthesizer", run_synthesizer)
     builder.add_node("retry_dispatcher", run_retry_dispatcher)
     builder.add_node("evaluator", run_evaluator)
