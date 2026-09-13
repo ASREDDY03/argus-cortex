@@ -17,6 +17,9 @@ def run_observability_agent(state: CortexState) -> dict:
     if "observability_agent" not in state.get("agents_to_run", []):
         return {"findings": []}
     agent = ObservabilityAgent()
+    discovered = state.get("agent_files", {}).get("observability_agent", [])
+    if discovered:
+        agent.files_to_review = discovered
     focus = state.get("agent_focus", {}).get("observability_agent", "")
     findings = agent.analyze(state["goal"], focus=focus)
     return {"findings": findings}

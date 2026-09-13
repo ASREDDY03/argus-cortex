@@ -30,6 +30,9 @@ class CortexState(TypedDict):
     agents_to_run: List[str]
     agent_focus: dict[str, str]   # e.g. {"springboot_agent": "focus on auth and duplication"}
 
+    # Dynamically discovered files per agent (set before graph runs)
+    agent_files: dict[str, list[str]]   # {agent_name: [relative_path, ...]}
+
     # Generator outputs — merged across all agents automatically
     findings: Annotated[List[AgentFinding], lambda a, b: a + b]
 

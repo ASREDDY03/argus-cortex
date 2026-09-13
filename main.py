@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from tools.observability import init_tracing
 from tools.github_tool import sync_pr_states
+from tools.file_discovery import discover_files
 from orchestrator.graph import build_graph
 from memory.long_term import (
     start_run, finish_run, save_findings,
@@ -39,6 +40,10 @@ def run(
     thread_id = thread_id or str(uuid.uuid4())
     run_id = start_run(thread_id, goal)
     config = {"configurable": {"thread_id": thread_id}}
+
+    # Discover files in the Argus Agent repo before the graph runs
+    agent_files = discover_files()
+    _print_discovery(agent_files)
 
     # Sync PR outcomes from GitHub before agents run so long-term memory is current
     if settings.github_token:
@@ -69,6 +74,7 @@ def run(
         "plan": [],
         "agents_to_run": [],
         "agent_focus": {},
+        "agent_files": agent_files,
         "findings": [],
         "cross_cutting_issues": [],
         "coverage_gaps": [],
@@ -165,6 +171,28 @@ def history():
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _print_discovery(agent_files: dict):
+    if not agent_files:
+        console.print("[dim]File discovery skipped (ARGUS_REPO_PATH not set — agents use fallback lists)[/dim]\n")
+        return
+
+    table = Table(title="Discovered Files", show_header=True, header_style="bold cyan", box=None)
+    table.add_column("Agent", width=22)
+    table.add_column("Files", style="dim")
+
+    for agent, files in agent_files.items():
+        if files:
+            from pathlib import Path
+            names = ", ".join(Path(f).name for f in files[:5])
+            suffix = f" +{len(files) - 5} more" if len(files) > 5 else ""
+            table.add_row(agent, f"{names}{suffix}")
+        else:
+            table.add_row(agent, "[dim]none found — fallback list will be used[/dim]")
+
+    console.print(table)
+    console.print()
+
 
 def _print_plan(state: dict):
     plan = state.get("plan", [])
