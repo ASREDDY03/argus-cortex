@@ -91,13 +91,16 @@ def run(
         "error": None,
     }
 
-    # ── Phase 1: Run until interrupt (planner → agents → evaluator) ──
-    console.print("\n[bold yellow]Phase 1:[/bold yellow] Running Planner + Generator agents + Evaluator...\n")
+    # ── Phase 1: Stream until interrupt (planner → agents → synthesizer → evaluator) ──
+    console.print("\n[bold yellow]Phase 1:[/bold yellow] Running Planner + Generator agents + Synthesizer + Evaluator...\n")
 
-    with console.status("[bold green]Agents working..."):
-        state = graph.invoke(initial_state, config=config)
+    for chunk in graph.stream(initial_state, config=config):
+        node_name, node_output = next(iter(chunk.items()))
+        _stream_node(node_name, node_output)
 
-    _print_plan(state)
+    # Get final accumulated state from the checkpoint (graph paused at interrupt)
+    state = graph.get_state(config).values
+
     _print_synthesis(state)
     _print_findings_table(state)
 
@@ -172,6 +175,57 @@ def history():
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+_SEVERITY_COLOR = {"critical": "red", "high": "orange3", "medium": "yellow", "low": "green"}
+_GENERATOR_AGENTS = {"springboot_agent", "ml_agent", "react_agent", "infra_agent", "observability_agent"}
+
+
+def _stream_node(node_name: str, output: dict):
+    """Print a one-line status update as each graph node completes."""
+    if node_name == "planner":
+        agents = output.get("agents_to_run", [])
+        plan = output.get("plan", [])
+        console.print(f"[green]✓[/green] [bold]Planner[/bold] — {len(agents)} agent(s) selected")
+        for step in plan:
+            console.print(f"  [dim]{step}[/dim]")
+
+    elif node_name in _GENERATOR_AGENTS:
+        findings = output.get("findings", [])
+        if findings:
+            counts: dict[str, int] = {}
+            for f in findings:
+                sev = f.get("severity", "low")
+                counts[sev] = counts.get(sev, 0) + 1
+            # Print in severity order
+            parts = [
+                f"[{_SEVERITY_COLOR.get(s, 'white')}]{c} {s}[/{_SEVERITY_COLOR.get(s, 'white')}]"
+                for s in ("critical", "high", "medium", "low") if s in counts
+                for c in [counts[s]]
+            ]
+            console.print(f"[green]✓[/green] [bold]{node_name}[/bold] — {len(findings)} finding(s): {', '.join(parts)}")
+        else:
+            console.print(f"[green]✓[/green] [bold]{node_name}[/bold] — [dim]no findings[/dim]")
+
+    elif node_name == "synthesizer":
+        cross = output.get("cross_cutting_issues", [])
+        gaps = output.get("coverage_gaps", [])
+        parts = []
+        if cross:
+            parts.append(f"{len(cross)} cross-cutting pattern(s)")
+        if gaps:
+            parts.append(f"{len(gaps)} coverage gap(s)")
+        detail = ", ".join(parts) if parts else "no patterns or gaps"
+        console.print(f"[green]✓[/green] [bold magenta]Synthesizer[/bold magenta] — {detail}")
+
+    elif node_name == "evaluator":
+        approved = output.get("approved_findings", [])
+        rejected = output.get("rejected_findings", [])
+        console.print(
+            f"[green]✓[/green] [bold]Evaluator[/bold] — "
+            f"[green]{len(approved)} approved[/green]  "
+            f"[dim]{len(rejected)} rejected[/dim]"
+        )
+
+
 def _print_discovery(agent_files: dict):
     if not agent_files:
         console.print("[dim]File discovery skipped (ARGUS_REPO_PATH not set — agents use fallback lists)[/dim]\n")
@@ -192,14 +246,6 @@ def _print_discovery(agent_files: dict):
 
     console.print(table)
     console.print()
-
-
-def _print_plan(state: dict):
-    plan = state.get("plan", [])
-    if plan:
-        console.print("\n[bold yellow]Plan[/bold yellow]")
-        for i, step in enumerate(plan, 1):
-            console.print(f"  {i}. {step}")
 
 
 def _print_synthesis(state: dict):
