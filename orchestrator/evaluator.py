@@ -1,41 +1,68 @@
 """
 Evaluator Agent — claude-sonnet-4-6
 Independently scores every finding from the Generator agents.
+Uses tool_use to guarantee schema-valid output — no JSON parsing needed.
 """
 import json
 import anthropic
 from langsmith import traceable
 from memory.state import CortexState, AgentFinding
-from tools.retry import retry_api, parse_json_with_retry
+from tools.retry import retry_api
 from config.settings import settings
 
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 EVALUATOR_SYSTEM = """You are the Evaluator for Argus Cortex. Your job is to independently assess findings from specialized agents and decide which are worth opening a PR for.
 
-Scoring criteria:
+Approval criteria:
 - APPROVE if: finding is specific (has file + line), fix is actionable, impact is clear
 - REJECT if: finding is vague, duplicated, incorrect, or the fix would break functionality
 
-Return JSON in this exact format:
-{
-  "approved": [<list of finding indices that pass>],
-  "rejected": [<list of finding indices that fail>],
-  "notes": "overall evaluation summary"
-}"""
+Call submit_evaluation with your decision for every finding."""
 
 SYSTEM_BLOCK = [{"type": "text", "text": EVALUATOR_SYSTEM, "cache_control": {"type": "ephemeral"}}]
 
+EVALUATION_TOOL = {
+    "name": "submit_evaluation",
+    "description": "Submit approval/rejection decisions for all findings.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "approved": {
+                "type": "array",
+                "description": "Zero-based indices of findings that pass evaluation.",
+                "items": {"type": "integer"},
+            },
+            "rejected": {
+                "type": "array",
+                "description": "Zero-based indices of findings that fail evaluation.",
+                "items": {"type": "integer"},
+            },
+            "notes": {
+                "type": "string",
+                "description": "Overall evaluation summary — patterns seen, general quality assessment.",
+            },
+        },
+        "required": ["approved", "rejected", "notes"],
+    },
+}
+
 
 @retry_api
-def _call_evaluator(messages: list) -> str:
+def _call_evaluator(messages: list) -> dict:
+    """Calls the evaluator with forced tool_use — returns the parsed evaluation dict."""
     response = client.messages.create(
         model=settings.orchestrator_model,
         max_tokens=2048,
         system=SYSTEM_BLOCK,
         messages=messages,
+        tools=[EVALUATION_TOOL],
+        tool_choice={"type": "tool", "name": "submit_evaluation"},
     )
-    return response.content[0].text
+    for block in response.content:
+        if block.type == "tool_use":
+            return block.input
+    return {}
 
 
 @traceable(run_type="chain", name="evaluator")
@@ -53,15 +80,7 @@ def run_evaluator(state: CortexState) -> dict:
     findings_text = json.dumps(findings, indent=2)
     messages = [{"role": "user", "content": f"Evaluate these {len(findings)} findings:\n\n{findings_text}"}]
 
-    raw = _call_evaluator(messages)
-
-    def reprompt() -> str:
-        return _call_evaluator(messages + [
-            {"role": "assistant", "content": raw},
-            {"role": "user", "content": "Return ONLY valid JSON with approved/rejected/notes keys. No explanation."},
-        ])
-
-    result = parse_json_with_retry(raw, kind="object", reprompt_fn=reprompt)
+    result = _call_evaluator(messages)
 
     approved_indices = result.get("approved", [])
     rejected_indices = result.get("rejected", [])
