@@ -24,8 +24,9 @@ AGENT_DOMAINS = {
     "springboot_agent":     ["JenkinsService.java", "JenkinsController.java"],
     "ml_agent":             ["ml-service/app.py"],
     "react_agent":          ["JenkinsDashboardComponent.jsx", "JenkinsService.js"],
-    "infra_agent":          ["docker-compose.yml", "nginx.conf", "Jenkinsfile"],
+    "infra_agent":          ["docker-compose.yml", "nginx.conf"],
     "observability_agent":  ["prometheus.yml", "alert.rules.yml", "alertmanager.yml"],
+    "jenkins_agent":        ["Devops/Jenkinsfile", "Devops/docker-compose.yml"],
 }
 
 SYNTHESIZER_SYSTEM = """You are the Synthesizer for Argus Cortex, an AI agent network that audits the Argus Agent DevOps system.

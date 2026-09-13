@@ -4,11 +4,10 @@ from agents.base import BaseAgent
 
 class InfraAgent(BaseAgent):
     name = "infra_agent"
-    domain = "Infrastructure — Docker Compose, Kubernetes manifests, Nginx config, Jenkinsfile"
+    domain = "Infrastructure — Docker Compose, Kubernetes manifests, Nginx config"
     files_to_review = [
         "Devops/docker-compose.yml",
         "Devops/nginx/nginx.conf",
-        "Devops/Jenkinsfile",
     ]
 
 
