@@ -4,26 +4,22 @@ Runs after all Generator agents fan in, before the Evaluator.
 
 Responsibilities:
   1. Spot cross-cutting issues — patterns that appear across multiple agents/domains
-     (e.g. timeouts misconfigured in both Spring Boot AND docker-compose)
   2. Identify coverage gaps — files or areas that received zero findings
-     (may mean they're clean, or that the agent didn't look hard enough)
   3. Recommend targeted re-runs — which agents should look again and where
-     (surfaced to the human; no automatic retry loop yet)
 
 The Evaluator receives the synthesis output as context so cross-cutting
 patterns can influence how individual findings are scored.
+
+Full prompt/response traced to LangSmith via ChatAnthropic auto-tracing.
 """
 import json
-import anthropic
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 from langsmith import traceable
 from memory.state import CortexState
-from tools.retry import retry_api
 from config.settings import settings
 
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
-# Domain map — tells the Synthesizer what each agent is responsible for.
-# Used to detect gaps (agent ran but reported nothing on a file it owns).
+# Fallback domain map when dynamic file discovery wasn't run
 AGENT_DOMAINS = {
     "springboot_agent":     ["JenkinsService.java", "JenkinsController.java"],
     "ml_agent":             ["ml-service/app.py"],
@@ -50,8 +46,6 @@ Your three tasks:
    Keep recommendations concrete and specific. If coverage looks fine, leave retry_agents empty.
 
 Call submit_synthesis with your analysis."""
-
-SYSTEM_BLOCK = [{"type": "text", "text": SYNTHESIZER_SYSTEM, "cache_control": {"type": "ephemeral"}}]
 
 SYNTHESIS_TOOL = {
     "name": "submit_synthesis",
@@ -83,21 +77,23 @@ SYNTHESIS_TOOL = {
     },
 }
 
+_llm = ChatAnthropic(
+    model=settings.orchestrator_model,
+    api_key=settings.anthropic_api_key,
+    max_tokens=2048,
+    max_retries=3,
+)
+_llm_with_tools = _llm.bind_tools(
+    [SYNTHESIS_TOOL],
+    tool_choice={"type": "tool", "name": "submit_synthesis"},
+)
 
-@retry_api
+
 def _call_synthesizer(messages: list) -> dict:
-    """Calls the synthesizer with forced tool_use — returns parsed synthesis dict."""
-    response = client.messages.create(
-        model=settings.orchestrator_model,
-        max_tokens=2048,
-        system=SYSTEM_BLOCK,
-        messages=messages,
-        tools=[SYNTHESIS_TOOL],
-        tool_choice={"type": "tool", "name": "submit_synthesis"},
-    )
-    for block in response.content:
-        if block.type == "tool_use":
-            return block.input
+    """Invoke the synthesizer — auto-traced to LangSmith with full prompt + response."""
+    response = _llm_with_tools.invoke(messages)
+    if response.tool_calls:
+        return response.tool_calls[0]["args"]
     return {}
 
 
@@ -115,12 +111,9 @@ def run_synthesizer(state: CortexState) -> dict:
             "synthesis_notes": "No findings to synthesize.",
         }
 
-    # Build coverage summary: for each agent that ran, list which of its files
-    # appear in findings vs. which don't
+    # Build coverage summary using discovered files where available
     coverage_summary = []
     files_with_findings = {f.get("file", "") for f in findings}
-
-    # Prefer dynamically discovered files; fall back to hardcoded AGENT_DOMAINS
     agent_files = state.get("agent_files", {})
 
     for agent in agents_that_ran:
@@ -141,7 +134,15 @@ def run_synthesizer(state: CortexState) -> dict:
         f"All findings ({len(findings)} total):\n{findings_text}"
     )
 
-    messages = [{"role": "user", "content": prompt}]
+    messages = [
+        SystemMessage(content=[{
+            "type": "text",
+            "text": SYNTHESIZER_SYSTEM,
+            "cache_control": {"type": "ephemeral"},
+        }]),
+        HumanMessage(content=prompt),
+    ]
+
     result = _call_synthesizer(messages)
 
     return {
