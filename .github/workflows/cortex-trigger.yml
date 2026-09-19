@@ -1,0 +1,74 @@
+# Argus Cortex — GitHub Actions trigger
+#
+# Drop this workflow into the TARGET repo (e.g. argus-agent) to automatically
+# trigger a Cortex audit on every push to the default branch.
+#
+# Required secrets in the target repo:
+#   CORTEX_URL    — base URL of your Cortex webhook server
+#                   e.g. https://abc123.ngrok.io
+#   CORTEX_TOKEN  — value of WEBHOOK_SECRET from your Cortex .env
+#
+# The workflow calls POST /run on the Cortex webhook server with the
+# changed files as context, then links to the Cortex dashboard.
+
+name: Argus Cortex Audit
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: 'Audit goal (optional override)'
+        required: false
+        default: ''
+
+jobs:
+  cortex-audit:
+    name: Trigger Cortex Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Build goal from changed files
+        id: goal
+        run: |
+          if [ -n "${{ github.event.inputs.goal }}" ]; then
+            echo "text=${{ github.event.inputs.goal }}" >> $GITHUB_OUTPUT
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD | head -10 | tr '\n' ', ' | sed 's/,$//')
+            PUSHER="${{ github.actor }}"
+            REF="${{ github.ref_name }}"
+            COUNT=$(git rev-list --count HEAD~1..HEAD)
+            echo "text=Review ${COUNT} commit(s) pushed by ${PUSHER} to ${REF}. Changed: ${CHANGED}. Focus on bugs, security, and regressions." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger Cortex run
+        id: trigger
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "${{ secrets.CORTEX_URL }}/run" \
+            -H "Authorization: Bearer ${{ secrets.CORTEX_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"goal\": \"${{ steps.goal.outputs.text }}\", \"pusher\": \"github-actions\"}")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+          echo "status=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "Response: $BODY (HTTP $HTTP_CODE)"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::Cortex trigger returned HTTP $HTTP_CODE"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Argus Cortex" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** HTTP ${{ steps.trigger.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Goal:** ${{ steps.goal.outputs.text }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View results at: ${{ secrets.CORTEX_URL }}" >> $GITHUB_STEP_SUMMARY
