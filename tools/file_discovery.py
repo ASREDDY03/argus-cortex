@@ -1,8 +1,23 @@
 """
-Rule-based file discovery for the Argus Agent repo.
+Rule-based file discovery for Meuro Agent (and compatible repos).
 
 Walks the repo at run time and classifies files by agent domain so agents
 always review the current file tree rather than a hardcoded list.
+
+Meuro Agent structure:
+  Devops/
+    springboot-backend/src/main/java/...   Java source
+    ml-service/app.py, requirements.txt    Python ML service
+    react-frontend/src/...                 React JSX/JS frontend
+    nginx/nginx.conf                       Nginx config
+    docker-compose.yml                     Infra compose
+    kubernetes/*.yml                       K8s manifests
+    ansible/*.yml                          Ansible playbooks
+    prometheus.yml, alert.rules.yml        Observability
+    grafana/dashboards/*.json              Grafana dashboards
+    grafana/provisioning/...               Grafana provisioning
+    Jenkinsfile, jenkins-init.groovy       Jenkins CI
+    argus-agent/agent.py                   Monitoring agent (security)
 
 Classification is deterministic (extension + path rules, no LLM involved).
 Files are sorted by most-recently-modified so agents prioritise active code.
@@ -16,11 +31,12 @@ logger = logging.getLogger(__name__)
 
 MAX_FILES_PER_AGENT = 15
 
-# Directories to skip entirely — build artefacts, dependencies, VCS
+# Directories to skip entirely — build artefacts, dependencies, VCS, venvs, certs
 EXCLUDED_DIRS = {
     "target", "node_modules", "build", "dist", ".git",
-    "__pycache__", "venv", ".venv", ".gradle", ".mvn",
-    "coverage", ".pytest_cache", ".idea", ".vscode",
+    "__pycache__", "venv", ".venv", ".ml", ".gradle", ".mvn",
+    "coverage", ".pytest_cache", ".idea", ".vscode", "certs",
+    ".claude", ".code-review-graph",
 }
 
 # File name fragments that indicate test / spec files
@@ -79,20 +95,29 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
         name = path.name
 
         # --- springboot_agent: Java source files ---
-        # security_agent also gets Java controllers/services (primary attack surface)
+        # security_agent also gets controllers/services (primary attack surface)
+        # security_agent gets application.properties (hardcoded credentials risk)
         if suffix == ".java":
             buckets["springboot_agent"].append(path)
             if any(kw in name for kw in ("Controller", "Service", "Security", "Config", "Auth", "Filter")):
                 buckets["security_agent"].append(path)
 
+        elif suffix == ".properties" and "springboot-backend" in rel_str:
+            buckets["springboot_agent"].append(path)
+            buckets["security_agent"].append(path)
+
         # --- ml_agent: Python files inside the ML service directory ---
-        # security_agent also gets Python app files (Flask endpoints, subprocess usage)
+        # security_agent also gets Flask endpoint files (subprocess, API exposure)
         elif suffix == ".py" and "ml-service" in rel_str:
             buckets["ml_agent"].append(path)
             buckets["security_agent"].append(path)
 
+        # --- security_agent: monitoring agent scripts (Jenkins API credentials) ---
+        elif suffix == ".py" and "argus-agent" in rel_str:
+            buckets["security_agent"].append(path)
+
         # --- react_agent: JSX/TSX anywhere + JS files inside the React frontend ---
-        # security_agent gets JS service files (token storage, API calls)
+        # security_agent gets service files (token storage, API calls)
         elif suffix in (".jsx", ".tsx"):
             buckets["react_agent"].append(path)
         elif suffix == ".js" and "react-frontend" in rel_str:
@@ -100,24 +125,34 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
             if any(kw in name.lower() for kw in ("service", "auth", "api", "token")):
                 buckets["security_agent"].append(path)
 
-        # --- jenkins_agent: Jenkinsfile (primary) + docker-compose (service context) ---
-        # security_agent also gets Jenkinsfile (credentials handling in CI)
+        # --- jenkins_agent: Jenkinsfile + Groovy init scripts ---
+        # security_agent also gets these (credentials handling in CI)
         elif name == "Jenkinsfile":
             buckets["jenkins_agent"].append(path)
             buckets["security_agent"].append(path)
 
-        # --- infra_agent: Docker Compose, Nginx configs ---
-        # docker-compose also feeds security_agent (ports) and dependency_agent (image versions)
-        elif "docker-compose" in name and suffix in (".yml", ".yaml"):
+        elif suffix == ".groovy":
             buckets["jenkins_agent"].append(path)
+            buckets["security_agent"].append(path)
+
+        # --- infra_agent: Docker Compose, Nginx, Kubernetes manifests, Ansible ---
+        # docker-compose also feeds security_agent (exposed ports) and dependency_agent (image versions)
+        elif "docker-compose" in name and suffix in (".yml", ".yaml"):
             buckets["infra_agent"].append(path)
             buckets["security_agent"].append(path)
             buckets["dependency_agent"].append(path)
+
         elif suffix in (".conf", ".nginx") and "nginx" in rel_str.lower():
             buckets["infra_agent"].append(path)
             buckets["security_agent"].append(path)
 
-        # --- dependency_agent: Maven, pip, npm manifests, and Dockerfiles ---
+        elif suffix in (".yml", ".yaml") and "kubernetes" in rel_str:
+            buckets["infra_agent"].append(path)
+
+        elif suffix in (".yml", ".yaml") and "ansible" in rel_str:
+            buckets["infra_agent"].append(path)
+
+        # --- dependency_agent: Maven, pip, npm manifests, Dockerfiles ---
         elif name == "pom.xml":
             buckets["dependency_agent"].append(path)
         elif name == "requirements.txt":
@@ -127,10 +162,18 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
         elif name == "Dockerfile":
             buckets["dependency_agent"].append(path)
 
-        # --- observability_agent: Prometheus, Alertmanager, Grafana YAML ---
+        # --- observability_agent: Prometheus, Alertmanager, Grafana YAMLs + dashboard JSONs ---
         elif suffix in (".yml", ".yaml") and any(
             kw in name.lower()
             for kw in ("prometheus", "alert", "alertmanager", "grafana", "datasource", "dashboard")
+        ):
+            buckets["observability_agent"].append(path)
+
+        elif suffix in (".yml", ".yaml") and "grafana" in rel_str.lower():
+            buckets["observability_agent"].append(path)
+
+        elif suffix == ".json" and "grafana" in rel_str.lower() and (
+            "dashboard" in rel_str.lower() or "dashboards" in rel_str.lower()
         ):
             buckets["observability_agent"].append(path)
 

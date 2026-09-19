@@ -21,14 +21,19 @@ from config.settings import settings
 
 # Fallback domain map when dynamic file discovery wasn't run
 AGENT_DOMAINS = {
-    "springboot_agent":     ["JenkinsService.java", "JenkinsController.java"],
-    "ml_agent":             ["ml-service/app.py"],
-    "react_agent":          ["JenkinsDashboardComponent.jsx", "JenkinsService.js"],
-    "infra_agent":          ["docker-compose.yml", "nginx.conf"],
-    "observability_agent":  ["prometheus.yml", "alert.rules.yml", "alertmanager.yml"],
-    "jenkins_agent":        ["Devops/Jenkinsfile", "Devops/docker-compose.yml"],
-    "security_agent":       ["JenkinsController.java", "JenkinsService.java", "app.py", "nginx.conf", "docker-compose.yml", "Jenkinsfile"],
-    "dependency_agent":     ["pom.xml", "requirements.txt", "package.json", "docker-compose.yml", "Dockerfile"],
+    "springboot_agent":     ["Devops/springboot-backend/src/main/java/com/example/crudspring/services/JenkinsService.java",
+                             "Devops/springboot-backend/src/main/java/com/example/crudspring/controllers/JenkinsController.java"],
+    "ml_agent":             ["Devops/ml-service/app.py"],
+    "react_agent":          ["Devops/react-frontend/src/components/JenkinsDashboardComponent.jsx",
+                             "Devops/react-frontend/src/services/JenkinsService.js"],
+    "infra_agent":          ["Devops/docker-compose.yml", "Devops/nginx/nginx.conf"],
+    "observability_agent":  ["Devops/prometheus.yml", "Devops/alert.rules.yml", "Devops/alertmanager.yml"],
+    "jenkins_agent":        ["Devops/Jenkinsfile", "Devops/jenkins-init.groovy"],
+    "security_agent":       ["Devops/springboot-backend/src/main/java/com/example/crudspring/controllers/JenkinsController.java",
+                             "Devops/ml-service/app.py", "Devops/nginx/nginx.conf",
+                             "Devops/docker-compose.yml", "Devops/Jenkinsfile"],
+    "dependency_agent":     ["Devops/springboot-backend/pom.xml", "Devops/ml-service/requirements.txt",
+                             "Devops/react-frontend/package.json", "Devops/docker-compose.yml"],
 }
 
 SYNTHESIZER_SYSTEM = """You are the Synthesizer for Argus Cortex, an AI agent network that audits the Argus Agent DevOps system.
