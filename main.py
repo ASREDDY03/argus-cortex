@@ -8,10 +8,15 @@ Usage:
   python main.py run "goal" --web        # send to web dashboard
   python main.py run "goal" --auto       # auto-approve all (CI/webhook)
   python main.py sync-prs               # sync open PR states from GitHub
-  python main.py history
+  python main.py history                # list recent runs
+  python main.py history <run-id>       # full findings for one run
+  python main.py watch                  # live dashboard
+  python main.py trends                 # week-over-week trends
+  python main.py send-digest            # email weekly digest
 """
 import uuid
 import typer
+from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -25,7 +30,10 @@ from memory.long_term import (
     start_run, finish_run, save_findings,
     mark_approved, mark_rejected, mark_pr_opened,
     get_run_history, init_db, save_pending_review, get_stats,
+    get_run_findings, get_weekly_stats,
 )
+from tools.email_tool import send_run_digest, send_weekly_digest
+from orchestrator.goal_suggester import suggest_goals
 from config.settings import settings
 
 app = typer.Typer()
@@ -34,22 +42,33 @@ console = Console()
 
 @app.command()
 def run(
-    goal: str = typer.Argument(..., help="What you want Argus Cortex to do"),
+    goal: str = typer.Argument(None, help="What you want Argus Cortex to do (omit to get AI suggestions)"),
     thread_id: str = typer.Option(None, help="Resume a previous run by thread ID"),
     auto_approve: bool = typer.Option(False, "--auto", help="Skip human review, approve all"),
     web_review: bool = typer.Option(False, "--web", help="Send findings to web dashboard instead of CLI review"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run agents and show findings but skip review, PRs, and DB writes"),
+    min_confidence: int = typer.Option(0, "--min-confidence", help="Reject findings below this confidence (0 = keep all)"),
 ):
     """Run the Argus Cortex agent network."""
 
     init_db()
+
+    # ── Goal Suggester — runs BEFORE the orchestrator ─────────────────────────
+    # Discover files first so the suggester has file context
+    agent_files = discover_files()
+
+    if not goal:
+        goal = _suggest_and_pick_goal(agent_files)
+        if not goal:
+            console.print("[yellow]No goal selected. Exiting.[/yellow]")
+            return
+    # ─────────────────────────────────────────────────────────────────────────
+
     tracing_enabled = init_tracing()
     thread_id = thread_id or str(uuid.uuid4())
     run_id = start_run(thread_id, goal)
     config = {"configurable": {"thread_id": thread_id}}
 
-    # Discover files in the Argus Agent repo before the graph runs
-    agent_files = discover_files()
     _print_discovery(agent_files)
 
     # Sync PR outcomes from GitHub before agents run so long-term memory is current.
@@ -127,6 +146,14 @@ def run(
     _print_findings_table(state)
 
     approved = state.get("approved_findings", [])
+
+    # Filter by minimum confidence if set
+    if min_confidence > 0:
+        before = len(approved)
+        approved = [f for f in approved if (f.get("confidence") or 0) >= min_confidence]
+        if len(approved) < before:
+            console.print(f"[dim]--min-confidence {min_confidence}: filtered out {before - len(approved)} low-confidence finding(s)[/dim]")
+
     if not approved:
         console.print("[yellow]No findings approved by Evaluator. Nothing to PR.[/yellow]")
         if not dry_run:
@@ -464,32 +491,223 @@ def sync_prs():
 
 
 @app.command()
-def history():
-    """Show recent Argus Cortex runs."""
+def watch():
+    """Live terminal dashboard — polls DB every 2s showing active runs and findings."""
+    import time
+    from rich.live import Live
+
     init_db()
+
+    def _render() -> Table:
+        runs = get_run_history(limit=8)
+        table = Table(
+            title=f"Argus Cortex — Live  [dim]{datetime.utcnow().strftime('%H:%M:%S UTC')}[/dim]",
+            show_header=True, header_style="bold cyan", box=None, expand=True,
+        )
+        table.add_column("Run ID",  width=10)
+        table.add_column("Goal",    min_width=30)
+        table.add_column("Status",  width=12)
+        table.add_column("Cost",    width=10, justify="right")
+        table.add_column("Started", width=17)
+
+        for r in runs:
+            cost = r.get("cost_usd") or 0.0
+            status = r["status"]
+            if status == "running":
+                status_str = "[bold yellow]● running[/bold yellow]"
+            elif status == "completed":
+                status_str = "[green]✔ done[/green]"
+            else:
+                status_str = f"[dim]{status}[/dim]"
+
+            table.add_row(
+                r["id"][:8],
+                r["goal"][:52],
+                status_str,
+                f"${cost:.4f}" if cost else "—",
+                r["created_at"][:16],
+            )
+        return table
+
+    console.print("[dim]Watching Argus Cortex — Ctrl+C to exit[/dim]\n")
+    try:
+        with Live(console=console, refresh_per_second=0.5) as live:
+            while True:
+                live.update(_render())
+                time.sleep(2)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/dim]")
+
+
+@app.command()
+def trends():
+    """Show week-over-week finding counts, approval rates, and cost for the last 8 weeks."""
+    init_db()
+    weeks = get_weekly_stats(weeks=8)
+
+    if not weeks:
+        console.print("[dim]Not enough data yet — run a few audits first.[/dim]")
+        return
+
+    max_findings = max((w["findings"] or 0 for w in weeks), default=1)
+
+    table = Table(
+        title="Trends — last 8 weeks",
+        show_header=True, header_style="bold cyan", box=None,
+    )
+    table.add_column("Week",      width=10)
+    table.add_column("Runs",      width=6,  justify="right")
+    table.add_column("Findings",  width=10, justify="right")
+    table.add_column("Bar",       width=18, no_wrap=True)
+    table.add_column("Approved",  width=10, justify="right")
+    table.add_column("Rate",      width=7,  justify="right")
+    table.add_column("Cost",      width=10, justify="right")
+
+    for w in weeks:
+        found  = w["findings"] or 0
+        appr   = w["approved"] or 0
+        rate   = int(appr / max(found, 1) * 100)
+        bar    = _bar(found, max_findings, width=16)
+        table.add_row(
+            w["week"],
+            str(w["runs"] or 0),
+            str(found),
+            f"[cyan]{bar}[/cyan]",
+            str(appr),
+            f"{rate}%",
+            f"${w['cost_usd']:.4f}",
+        )
+
+    console.print(table)
+
+    # Week-over-week delta for latest two weeks
+    if len(weeks) >= 2:
+        latest = weeks[-1]["findings"] or 0
+        prior  = weeks[-2]["findings"] or 0
+        delta  = latest - prior
+        arrow  = "↑" if delta > 0 else ("↓" if delta < 0 else "→")
+        color  = "red" if delta > 0 else ("green" if delta < 0 else "dim")
+        console.print(f"\n[dim]Latest vs prior week:[/dim] [{color}]{arrow} {abs(delta)} finding(s)[/{color}]")
+
+
+@app.command(name="send-digest")
+def send_digest_cmd():
+    """Send a weekly aggregate digest email (requires SMTP_* in .env)."""
+    init_db()
+
+    if not settings.smtp_host:
+        console.print("[red]SMTP not configured — set SMTP_HOST, SMTP_USER, SMTP_PASSWORD, DIGEST_TO in .env[/red]")
+        raise typer.Exit(1)
+
+    with console.status("[bold cyan]Generating digest...[/bold cyan]"):
+        s = get_stats()
+        ok = send_weekly_digest(s)
+
+    if ok:
+        console.print(f"[green]✔[/green] Digest sent to [bold]{settings.digest_to}[/bold]")
+    else:
+        console.print("[red]Failed to send digest — check SMTP settings and logs.[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def history(
+    run_id: str = typer.Argument(None, help="Run ID to inspect (shows all findings for that run)"),
+):
+    """Show recent runs, or all findings for a specific run."""
+    init_db()
+
+    # ── Full detail for one run ───────────────────────────────────────────────
+    if run_id:
+        findings = get_run_findings(run_id)
+        if not findings:
+            console.print(f"[red]No findings found for run {run_id!r}. Check the run ID.[/red]")
+            raise typer.Exit(1)
+
+        _SEV_COLOR = {"critical": "red", "high": "orange3", "medium": "yellow", "low": "green"}
+        _SEV_EMOJI = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+
+        table = Table(
+            title=f"Findings — run {run_id[:8]}",
+            show_header=True, header_style="bold cyan", box=None,
+        )
+        table.add_column("Sev",        width=9)
+        table.add_column("Category",   width=13)
+        table.add_column("Agent",      width=20)
+        table.add_column("File:Line",  width=34)
+        table.add_column("Conf",       width=6, justify="right")
+        table.add_column("Status",     width=10)
+        table.add_column("PR",         width=8)
+
+        for f in findings:
+            sev   = f.get("severity", "low")
+            color = _SEV_COLOR.get(sev, "white")
+            emoji = _SEV_EMOJI.get(sev, "⚪")
+            file_line = f.get("file", "")
+            if f.get("line"):
+                file_line += f":{f['line']}"
+            file_line = file_line[-32:] if len(file_line) > 32 else file_line
+
+            conf = f.get("confidence")
+            conf_str = f"{conf}%" if conf is not None else "—"
+            if conf is not None:
+                conf_color = "green" if conf >= 80 else "yellow" if conf >= 60 else "red"
+                conf_str = f"[{conf_color}]{conf}%[/{conf_color}]"
+
+            if f.get("approved"):
+                status = "[green]approved[/green]"
+            elif f.get("rejected"):
+                status = "[dim]rejected[/dim]"
+            else:
+                status = "[dim]pending[/dim]"
+
+            pr_state = f.get("pr_state") or ("open" if f.get("pr_url") else "")
+            pr_str = (
+                f"[green]merged[/green]" if pr_state == "merged" else
+                f"[dim]closed[/dim]"    if pr_state == "closed" else
+                f"[cyan]open[/cyan]"    if pr_state == "open"   else
+                "[dim]—[/dim]"
+            )
+
+            table.add_row(
+                f"{emoji} [{color}]{sev}[/{color}]",
+                f.get("category", ""),
+                f.get("agent", ""),
+                file_line,
+                conf_str,
+                status,
+                pr_str,
+            )
+
+        console.print(table)
+        console.print(f"\n[dim]{len(findings)} finding(s) total for run {run_id[:8]}[/dim]")
+        return
+
+    # ── Recent runs list ──────────────────────────────────────────────────────
     runs = get_run_history(limit=10)
     if not runs:
         console.print("[dim]No runs yet.[/dim]")
         return
 
     table = Table(title="Recent Runs", show_header=True, header_style="bold cyan")
+    table.add_column("Run ID")
     table.add_column("Date")
     table.add_column("Goal")
     table.add_column("Status")
     table.add_column("Cost", justify="right")
-    table.add_column("Thread ID")
 
     for r in runs:
         cost = r.get("cost_usd") or 0.0
         cost_str = f"${cost:.4f}" if cost else "—"
         table.add_row(
+            r["id"][:8],
             r["created_at"][:16],
             r["goal"][:55],
             r["status"],
             cost_str,
-            r["thread_id"][:12] + "...",
         )
     console.print(table)
+    console.print("[dim]Tip: python main.py history <run-id> to see all findings for a run[/dim]")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -734,6 +952,12 @@ def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool
     suppressed = state.get("suppressed_count", 0)
     if suppressed:
         console.print(f"[dim]{suppressed} finding(s) suppressed as known duplicates (open PR or prior approval)[/dim]")
+    approved = state.get("approved_findings", [])
+    confidences = [f.get("confidence") for f in approved if f.get("confidence") is not None]
+    if confidences:
+        avg_conf = int(sum(confidences) / len(confidences))
+        conf_color = "green" if avg_conf >= 80 else "yellow" if avg_conf >= 60 else "red"
+        console.print(f"[dim]Avg confidence: [{conf_color}]{avg_conf}%[/{conf_color}][/dim]")
     if cost_usd > 0:
         console.print(f"[dim]Cost: ${cost_usd:.4f} USD[/dim]")
     console.print(f"\n[dim]Resume this run: python main.py run '{goal}' --thread-id {thread_id}[/dim]")
@@ -741,6 +965,59 @@ def _print_results(state: dict, thread_id: str, goal: str, tracing_enabled: bool
         console.print(f"[dim]LangSmith traces: https://smith.langchain.com/projects/p/{settings.langchain_project}[/dim]\n")
     else:
         console.print()
+
+
+def _suggest_and_pick_goal(agent_files: dict) -> str | None:
+    """
+    Display AI-suggested goals, let the user pick one or type their own.
+    Returns the chosen goal string, or None if the user exits.
+    """
+    recent_runs = get_run_history(limit=6)
+
+    console.print(Panel(
+        "[bold cyan]Goal Suggester[/bold cyan]\n\n"
+        "[dim]Analysing the Argus Agent repo to suggest audit goals…[/dim]",
+        border_style="cyan",
+    ))
+
+    with console.status("[bold cyan]Generating suggestions…[/bold cyan]"):
+        suggestions = suggest_goals(agent_files, recent_runs)
+
+    if not suggestions:
+        console.print("[red]Could not generate suggestions.[/red]")
+        goal = Prompt.ask("\nType your goal manually (or press Enter to exit)", default="")
+        return goal.strip() or None
+
+    # Display numbered list
+    console.print("\n[bold]Suggested goals:[/bold]\n")
+    for i, s in enumerate(suggestions):
+        console.print(f"  [bold cyan]{i + 1}.[/bold cyan] {s}")
+
+    console.print(f"\n  [bold cyan]{len(suggestions) + 1}.[/bold cyan] [dim]Type my own goal[/dim]")
+    console.print(f"  [bold cyan]{len(suggestions) + 2}.[/bold cyan] [dim]Exit[/dim]")
+
+    while True:
+        raw = Prompt.ask(
+            f"\nPick a number [1-{len(suggestions) + 2}]",
+            default="1",
+        )
+        if not raw.strip().isdigit():
+            console.print("[yellow]Enter a number.[/yellow]")
+            continue
+        choice = int(raw.strip())
+        if 1 <= choice <= len(suggestions):
+            goal = suggestions[choice - 1]
+            console.print(f"\n[green]✓[/green] Selected: [bold]{goal}[/bold]\n")
+            return goal
+        elif choice == len(suggestions) + 1:
+            goal = Prompt.ask("Your goal").strip()
+            if goal:
+                return goal
+            console.print("[yellow]Goal cannot be empty.[/yellow]")
+        elif choice == len(suggestions) + 2:
+            return None
+        else:
+            console.print(f"[yellow]Enter a number between 1 and {len(suggestions) + 2}.[/yellow]")
 
 
 def _agent_from_pr_url(url: str) -> str:
