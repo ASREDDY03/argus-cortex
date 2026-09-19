@@ -37,6 +37,7 @@ from orchestrator.planner import run_planner
 from orchestrator.synthesizer import run_synthesizer
 from orchestrator.evaluator import run_evaluator
 from orchestrator.human_review import run_human_review
+from orchestrator.test_writer import run_test_writer
 from orchestrator.pr_creator import run_pr_creator
 from orchestrator.retry_dispatcher import run_retry_dispatcher
 from agents.springboot_agent import run_springboot_agent
@@ -103,6 +104,7 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_node("retry_dispatcher", run_retry_dispatcher)
     builder.add_node("evaluator", run_evaluator)
     builder.add_node("human_review", run_human_review)
+    builder.add_node("test_writer", run_test_writer)
     builder.add_node("pr_creator", run_pr_creator)
 
     # --- Entry point ---
@@ -141,8 +143,9 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
         },
     )
 
-    # --- Human Review → PR Creator → END ---
-    builder.add_edge("human_review", "pr_creator")
+    # --- Human Review -> Test Writer -> PR Creator -> END ---
+    builder.add_edge("human_review", "test_writer")
+    builder.add_edge("test_writer", "pr_creator")
     builder.add_edge("pr_creator", END)
 
     # --- Durable checkpointing (SQLite) ---

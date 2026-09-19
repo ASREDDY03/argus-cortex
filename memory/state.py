@@ -51,6 +51,9 @@ class CortexState(TypedDict):
     human_approved_indices: List[int]   # which approved_findings to actually PR
     human_notes: str                    # optional human comment
 
+    # Test Writer output
+    generated_tests: List[dict]   # [{test_file_path, content, framework, source_file}]
+
     # Final output
     pr_urls: List[str]
     summary: str

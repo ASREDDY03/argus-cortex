@@ -32,8 +32,10 @@ def run_pr_creator(state: CortexState) -> dict:
 
     console.print(f"[cyan]Creating consolidated branch for {len(agents)} agent(s), {pr_ready_count} patch(es)...[/cyan]")
 
+    generated_tests = state.get("generated_tests", [])
+
     try:
-        result = create_consolidated_pr(run_id, approved, goal, human_notes)
+        result = create_consolidated_pr(run_id, approved, goal, human_notes, generated_tests)
         url = result.get("pr_url")
         ci_passed = result.get("ci_passed")
         ci_summary = result.get("ci_summary", "")

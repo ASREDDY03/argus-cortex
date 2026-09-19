@@ -169,6 +169,7 @@ def create_consolidated_pr(
     all_findings: list[dict],
     goal: str,
     human_notes: str = "",
+    generated_tests: list[dict] | None = None,
 ) -> dict:
     """
     Commit ALL approved patches from ALL agents onto one branch,
@@ -217,8 +218,36 @@ def create_consolidated_pr(
         except GithubException:
             pass
 
+    # Commit generated test files
+    test_files_committed: list[str] = []
+    for test in (generated_tests or []):
+        test_path    = test.get("test_file_path", "")
+        test_content = test.get("content", "")
+        if not test_path or not test_content:
+            continue
+        try:
+            try:
+                existing = repo.get_contents(test_path, ref=base_branch)
+                repo.update_file(
+                    path=test_path,
+                    message=f"cortex: add tests for {test.get('source_file', test_path)}",
+                    content=test_content,
+                    sha=existing.sha,
+                    branch=branch_name,
+                )
+            except GithubException:
+                repo.create_file(
+                    path=test_path,
+                    message=f"cortex: add tests for {test.get('source_file', test_path)}",
+                    content=test_content,
+                    branch=branch_name,
+                )
+            test_files_committed.append(test_path)
+        except GithubException as exc:
+            logger.warning("[test] Could not commit %s: %s", test_path, exc)
+
     # If nothing was committed, add a summary file so the PR has content
-    if not committed:
+    if not committed and not test_files_committed:
         _commit_summary(repo, branch_name, short_id, pr_ready, goal)
 
     # ── CI Validation ─────────────────────────────────────────────────────────
@@ -239,7 +268,7 @@ def create_consolidated_pr(
         }
     # ──────────────────────────────────────────────────────────────────────────
 
-    body = _build_pr_body(run_id, all_findings, patch_results, goal, human_notes, ci_result)
+    body = _build_pr_body(run_id, all_findings, patch_results, goal, human_notes, ci_result, generated_tests or [])
 
     agents_involved = sorted({f.get("agent", "") for f in all_findings})
     title = f"[Argus Cortex] {len(pr_ready)} improvement(s) across {len(agents_involved)} domain(s) — {short_id}"
@@ -290,6 +319,7 @@ def _build_pr_body(
     goal: str,
     human_notes: str,
     ci_result: dict | None = None,
+    generated_tests: list[dict] | None = None,
 ) -> str:
     severity_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
     pr_ready = [f for f in findings if f.get("pr_ready")]
@@ -361,6 +391,15 @@ def _build_pr_body(
                 ]
             else:
                 lines += [f"**Fix:** {f.get('suggested_fix', '')}", ""]
+
+    if generated_tests:
+        lines += ["", "---", "", "## Generated Tests", ""]
+        for t in generated_tests:
+            lines.append(
+                f"- `{t.get('test_file_path', '')}` "
+                f"({t.get('framework', '')}) — covers `{t.get('source_file', '')}`"
+            )
+        lines += [""]
 
     lines += [
         "---",

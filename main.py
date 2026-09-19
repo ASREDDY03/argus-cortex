@@ -120,6 +120,7 @@ def run(
         "evaluation_notes": "",
         "human_approved_indices": [],
         "human_notes": "",
+        "generated_tests": [],
         "pr_urls": [],
         "summary": "",
         "messages": [],
@@ -814,6 +815,20 @@ def _stream_node(node_name: str, output: dict):
             f"[green]{len(approved)} approved[/green]  "
             f"[dim]{len(rejected)} rejected[/dim]"
         )
+
+    elif node_name == "test_writer":
+        tests = output.get("generated_tests", [])
+        if tests:
+            frameworks = sorted({t.get("framework", "") for t in tests if t.get("framework")})
+            console.print(
+                f"[green]✓[/green] [bold]Test Writer[/bold] — "
+                f"[cyan]{len(tests)} test file(s)[/cyan] generated "
+                f"([dim]{', '.join(frameworks)}[/dim])"
+            )
+            for t in tests:
+                console.print(f"  [dim]{t.get('test_file_path', '')}[/dim]")
+        else:
+            console.print(f"[green]✓[/green] [bold]Test Writer[/bold] — [dim]no patchable findings, skipped[/dim]")
 
 
 
