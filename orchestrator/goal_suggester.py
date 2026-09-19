@@ -175,8 +175,8 @@ Example format: ["Goal one", "Goal two", "Goal three", "Goal four", "Goal five"]
     try:
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         response = client.messages.create(
-            model=settings.orchestrator_model,
-            max_tokens=600,
+            model=settings.agent_model,
+            max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()

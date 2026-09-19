@@ -69,7 +69,7 @@ Rules:
 _llm = ChatAnthropic(
     model=settings.agent_model,
     api_key=settings.anthropic_api_key,
-    max_tokens=8192,
+    max_tokens=2048,
     max_retries=3,
 )
 _llm_with_tools = _llm.bind_tools(
@@ -181,8 +181,15 @@ class BaseAgent:
         """
         from memory.state import CortexState  # avoid circular at module level
         if self.name not in state.get("agents_to_run", []):
-            return {"findings": [], "agent_tokens_in": 0, "agent_tokens_out": 0}
-        discovered = state.get("agent_files", {}).get(self.name, [])
+            return {"findings": [], "suppressed_count": 0, "agent_tokens_in": 0, "agent_tokens_out": 0}
+
+        agent_files_map = state.get("agent_files", {})
+        discovered = agent_files_map.get(self.name, [])
+
+        # Discovery ran but found nothing for this agent — skip to save tokens
+        if agent_files_map and not discovered:
+            return {"findings": [], "suppressed_count": 0, "agent_tokens_in": 0, "agent_tokens_out": 0}
+
         if discovered:
             self.files_to_review = discovered
         focus = state.get("agent_focus", {}).get(self.name, "")

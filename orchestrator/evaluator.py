@@ -94,7 +94,12 @@ def run_evaluator(state: CortexState) -> dict:
         synthesis_parts.append(f"Synthesizer summary: {synthesis_notes}")
 
     synthesis_context = ("\n\n" + "\n\n".join(synthesis_parts)) if synthesis_parts else ""
-    findings_text = json.dumps(findings, indent=2)
+    # Strip old_code/new_code — evaluator scores on severity/description/file, not diffs
+    slim_findings = [
+        {k: v for k, v in f.items() if k not in ("old_code", "new_code")}
+        for f in findings
+    ]
+    findings_text = json.dumps(slim_findings, indent=2)
 
     messages = [
         SystemMessage(content=[{
@@ -103,7 +108,7 @@ def run_evaluator(state: CortexState) -> dict:
             "cache_control": {"type": "ephemeral"},
         }]),
         HumanMessage(content=(
-            f"Evaluate these {len(findings)} findings:{synthesis_context}\n\n{findings_text}"
+            f"Evaluate these {len(slim_findings)} findings:{synthesis_context}\n\n{findings_text}"
         )),
     ]
 

@@ -81,9 +81,9 @@ SYNTHESIS_TOOL = {
 }
 
 _llm = ChatAnthropic(
-    model=settings.orchestrator_model,
+    model=settings.agent_model,
     api_key=settings.anthropic_api_key,
-    max_tokens=2048,
+    max_tokens=1024,
     max_retries=3,
 )
 _llm_with_tools = _llm.bind_tools(
@@ -131,13 +131,19 @@ def run_synthesizer(state: CortexState) -> dict:
             f"{agent} ({source}): covered={covered or 'none'}, no findings on={uncovered or 'none'}"
         )
 
-    findings_text = json.dumps(findings, indent=2)
+    # Strip old_code/new_code — synthesizer only needs metadata, not the actual diffs
+    slim_findings = [
+        {k: v for k, v in f.items() if k not in ("old_code", "new_code")}
+        for f in findings
+    ]
+
+    findings_text = json.dumps(slim_findings, indent=2)
     coverage_text = "\n".join(coverage_summary)
 
     prompt = (
         f"Agents that ran: {', '.join(agents_that_ran)}\n\n"
         f"Coverage summary (files with findings vs. files with none):\n{coverage_text}\n\n"
-        f"All findings ({len(findings)} total):\n{findings_text}"
+        f"All findings ({len(slim_findings)} total):\n{findings_text}"
     )
 
     messages = [
@@ -156,6 +162,6 @@ def run_synthesizer(state: CortexState) -> dict:
         "coverage_gaps": result.get("coverage_gaps", []),
         "retry_agents": result.get("retry_agents", {}),
         "synthesis_notes": result.get("synthesis_notes", ""),
-        "orch_tokens_in": tokens_in,
-        "orch_tokens_out": tokens_out,
+        "agent_tokens_in": tokens_in,
+        "agent_tokens_out": tokens_out,
     }
