@@ -196,5 +196,5 @@ def run_test_writer(state: CortexState) -> dict:
     return {
         "generated_tests": all_tests,
         "agent_tokens_in": total_in,
-        "agent_tokens_out": tout,
+        "agent_tokens_out": total_out,
     }

@@ -129,8 +129,8 @@ def run_synthesizer(state: CortexState) -> dict:
 
     for agent in agents_that_ran:
         owned_files = agent_files.get(agent) or AGENT_DOMAINS.get(agent, [])
-        covered = [f for f in owned_files if any(f in fw for fw in files_with_findings)]
-        uncovered = [f for f in owned_files if not any(f in fw for fw in files_with_findings)]
+        covered = [f for f in owned_files if any(fw.endswith(f) or f.endswith(fw) or fw == f for fw in files_with_findings)]
+        uncovered = [f for f in owned_files if not any(fw.endswith(f) or f.endswith(fw) or fw == f for fw in files_with_findings)]
         source = "discovered" if agent_files.get(agent) else "fallback"
         coverage_summary.append(
             f"{agent} ({source}): covered={covered or 'none'}, no findings on={uncovered or 'none'}"
