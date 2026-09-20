@@ -16,6 +16,7 @@ EVALUATOR_SYSTEM = """You are the Evaluator for Argus Cortex. Your job is to ind
 Approval criteria:
 - APPROVE if: finding has file + line, fix is actionable, and reasoning explains a concrete risk
 - REJECT if: finding is vague, duplicated, incorrect, the fix would break functionality, OR reasoning contains hedging language ("might", "could potentially", "may be", "appears to", "seems like", "possibly")
+- REJECT if confidence < 70 (agent itself is not sure enough)
 
 Pay special attention to the reasoning field — it is the primary signal for confidence.
 Call submit_evaluation with your decision for every finding."""

@@ -21,25 +21,42 @@ def run_retry_dispatcher(state: CortexState) -> dict:
     """LangGraph node: Retry Dispatcher."""
     retry_agents = state.get("retry_agents", {})
     current_focus = state.get("agent_focus", {})
+    current_files = state.get("agent_files", {})
     retry_count = state.get("retry_count", 0)
 
     if not retry_agents:
-        # Synthesizer changed its mind — nothing to retry, just bump count
         return {"retry_count": retry_count + 1}
 
-    # Retry focus takes precedence over original planner focus
-    merged_focus = {**current_focus, **retry_agents}
-    agent_names = list(retry_agents.keys())
+    merged_focus: dict[str, str] = dict(current_focus)
+    merged_files: dict[str, list[str]] = dict(current_files)
+    agent_names: list[str] = []
+
+    for agent, spec in retry_agents.items():
+        agent_names.append(agent)
+        # spec can be a string (old format) or {"focus": ..., "files": [...]}
+        if isinstance(spec, dict):
+            focus = spec.get("focus", "")
+            files = spec.get("files", [])
+        else:
+            focus = str(spec)
+            files = []
+
+        merged_focus[agent] = focus
+        if files:
+            # Restrict agent to only the specific files synthesizer flagged
+            merged_files[agent] = files
+            console.print(f"  [dim]{agent}: {focus} (targeting {len(files)} file(s))[/dim]")
+        else:
+            console.print(f"  [dim]{agent}: {focus}[/dim]")
 
     console.print(
-        f"\n[cyan]↻ Retry pass — re-running {len(agent_names)} agent(s): "
+        f"\n[cyan]Retry pass — re-running {len(agent_names)} agent(s): "
         f"{', '.join(agent_names)}[/cyan]"
     )
-    for agent, focus in retry_agents.items():
-        console.print(f"  [dim]{agent}: {focus}[/dim]")
 
     return {
         "agents_to_run": agent_names,
-        "agent_focus": merged_focus,
-        "retry_count": retry_count + 1,
+        "agent_focus":   merged_focus,
+        "agent_files":   merged_files,
+        "retry_count":   retry_count + 1,
     }

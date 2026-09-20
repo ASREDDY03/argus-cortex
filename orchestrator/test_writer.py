@@ -69,7 +69,7 @@ TEST_WRITER_TOOL = {
 }
 
 _llm = ChatAnthropic(
-    model=settings.agent_model,
+    model=settings.orchestrator_model,
     api_key=settings.anthropic_api_key,
     max_tokens=4096,
     max_retries=3,
@@ -173,7 +173,7 @@ def run_test_writer(state: CortexState) -> dict:
     ]
 
     if not patchable:
-        return {"generated_tests": [], "agent_tokens_in": 0, "agent_tokens_out": 0}
+        return {"generated_tests": [], "orch_tokens_in": 0, "orch_tokens_out": 0}
 
     grouped = _group_by_file(patchable)
     all_tests: list[dict] = []
@@ -195,6 +195,6 @@ def run_test_writer(state: CortexState) -> dict:
 
     return {
         "generated_tests": all_tests,
-        "agent_tokens_in": total_in,
-        "agent_tokens_out": total_out,
+        "orch_tokens_in":  total_in,
+        "orch_tokens_out": total_out,
     }

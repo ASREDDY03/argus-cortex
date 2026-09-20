@@ -402,12 +402,23 @@ def _build_pr_body(
             file_path = f.get("file", "")
             patch = patch_map.get(file_path)
 
+            risk = f.get("risk", "")
+            risk_note = f.get("risk_note", "")
+            risk_line = ""
+            if risk in ("medium", "high"):
+                risk_emoji = "🟡" if risk == "medium" else "🔴"
+                risk_line = f"**Risk:** {risk_emoji} `{risk.upper()}`"
+                if risk_note:
+                    risk_line += f" — {risk_note}"
+
             lines += [
                 f"### {i}. {emoji} `{f.get('severity', '').upper()}` — {f.get('category', '')}",
                 f"**File:** `{file_path}`" + (f" (line {f['line']})" if f.get("line") else ""),
                 f"**Issue:** {f.get('description', '')}",
-                "",
             ]
+            if risk_line:
+                lines.append(risk_line)
+            lines.append("")
 
             if patch and patch.success and patch.unified_diff:
                 lines += [

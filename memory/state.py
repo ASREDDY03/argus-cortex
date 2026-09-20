@@ -14,6 +14,8 @@ class AgentFinding(TypedDict):
     new_code: str           # replacement code (empty string if not applicable)
     pr_ready: bool
     reasoning: str          # concrete explanation of the risk and why this is not intentional design
+    confidence: int              # 0-100 self-assessed confidence the finding is a real issue
+    finding_id: str              # stable 16-char hex ID derived from file+category+description
 
 
 class CortexState(TypedDict):
@@ -37,6 +39,9 @@ class CortexState(TypedDict):
     # Test file inventory per agent domain (file names only, no content)
     test_inventory: dict[str, list[str]]
 
+    # Static analysis results — injected into agent context before analysis
+    static_analysis: dict[str, str]   # {tool_name: summary_text}
+
     # Generator outputs — merged across all agents automatically
     findings: Annotated[List[AgentFinding], lambda a, b: a + b]
 
@@ -44,7 +49,7 @@ class CortexState(TypedDict):
     cross_cutting_issues: List[str]   # patterns that span multiple agents/domains
     coverage_gaps: List[str]          # files or areas no agent meaningfully covered
     synthesis_notes: str              # overall coverage quality summary
-    retry_agents: dict[str, str]      # recommended re-runs: {agent_name: focus}
+    retry_agents: dict[str, object]   # recommended re-runs: {agent_name: focus_str_or_spec_obj}
 
     # Evaluator output
     approved_findings: List[AgentFinding]

@@ -71,6 +71,7 @@ def init_db():
                 pr_url          TEXT,
                 pr_state        TEXT,
                 created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finding_id      TEXT,
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
 
@@ -98,6 +99,7 @@ def init_db():
             "ALTER TABLE runs ADD COLUMN tokens_in INTEGER DEFAULT 0",
             "ALTER TABLE runs ADD COLUMN tokens_out INTEGER DEFAULT 0",
             "ALTER TABLE runs ADD COLUMN cost_usd REAL DEFAULT 0.0",
+            "ALTER TABLE findings ADD COLUMN finding_id TEXT",
         ]:
             try:
                 conn.execute(migration)
@@ -136,8 +138,8 @@ def save_findings(run_id: str, findings: list[dict]):
             conn.execute(
                 """INSERT INTO findings
                    (id, run_id, agent, file, line, severity, category,
-                    description, suggested_fix, pr_ready)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    description, suggested_fix, pr_ready, finding_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     run_id,
@@ -149,6 +151,7 @@ def save_findings(run_id: str, findings: list[dict]):
                     f.get("description", ""),
                     f.get("suggested_fix", ""),
                     1 if f.get("pr_ready") else 0,
+                    f.get("finding_id", ""),
                 ),
             )
 

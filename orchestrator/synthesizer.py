@@ -49,9 +49,10 @@ Your three tasks:
    This may mean the area is clean (good!) or the agent didn't look hard enough (worth flagging).
    Do NOT flag an area as a gap just because it has few findings — only flag it if you suspect under-coverage.
 
-3. RETRY RECOMMENDATIONS — if a gap looks suspicious (an agent reported nothing on a complex file),
-   recommend a targeted re-run: which agent, which file, what specific angle to investigate.
-   Keep recommendations concrete and specific. If coverage looks fine, leave retry_agents empty.
+3. RETRY RECOMMENDATIONS — if a gap looks suspicious, recommend a targeted re-run.
+   Specify: which agent, which specific files to look at, what angle to investigate.
+   Example: {"security_agent": {"focus": "check JWT validation flow", "files": ["path/to/AuthController.java"]}}
+   If coverage looks fine, leave retry_agents empty.
 
 Call submit_synthesis with your analysis."""
 
@@ -73,8 +74,15 @@ SYNTHESIS_TOOL = {
             },
             "retry_agents": {
                 "type": "object",
-                "description": "Recommended targeted re-runs keyed by agent name. Value is the specific focus instruction. Empty object if coverage is adequate.",
-                "additionalProperties": {"type": "string"},
+                "description": "Recommended targeted re-runs keyed by agent name. Value is a JSON object with 'focus' (specific instruction) and optionally 'files' (list of specific file paths to re-examine). Empty object if coverage is adequate.",
+                "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                        "focus": {"type": "string"},
+                        "files": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["focus"]
+                },
             },
             "synthesis_notes": {
                 "type": "string",

@@ -25,6 +25,7 @@ from rich.prompt import Prompt, Confirm
 from tools.observability import init_tracing
 from tools.github_tool import sync_pr_states
 from tools.file_discovery import discover_files, discover_test_files
+from tools.static_analysis import run_all as run_static_analysis
 from tools.slack_tool import notify_run_complete
 from orchestrator.graph import build_graph
 from memory.long_term import (
@@ -65,6 +66,16 @@ def run(
             console.print("[yellow]No goal selected. Exiting.[/yellow]")
             return
     # ─────────────────────────────────────────────────────────────────────────
+
+    static_analysis: dict[str, str] = {}
+    if settings.argus_repo_path:
+        with console.status("[dim]Running static analysis (trivy, bandit, eslint)...[/dim]"):
+            static_analysis = run_static_analysis(settings.argus_repo_path)
+        active = {k: v for k, v in static_analysis.items() if v}
+        if active:
+            console.print(f"[dim]Static analysis: {', '.join(active.keys())} found issues[/dim]")
+        else:
+            console.print("[dim]Static analysis: no issues found (or tools not installed)[/dim]")
 
     tracing_enabled = init_tracing()
     thread_id = thread_id or str(uuid.uuid4())
@@ -113,6 +124,7 @@ def run(
         "agent_focus": {},
         "agent_files": agent_files,
         "test_inventory": test_inventory,
+        "static_analysis": static_analysis,
         "findings": [],
         "cross_cutting_issues": [],
         "coverage_gaps": [],
@@ -935,6 +947,22 @@ def _stream_node(node_name: str, output: dict):
                 console.print(f"  [dim]{t.get('test_file_path', '')}[/dim]")
         else:
             console.print(f"[green]✓[/green] [bold]Test Writer[/bold] — [dim]no patchable findings, skipped[/dim]")
+
+    elif node_name == "critic":
+        approved = output.get("approved_findings", [])
+        if approved:
+            high   = sum(1 for f in approved if f.get("risk") == "high")
+            medium = sum(1 for f in approved if f.get("risk") == "medium")
+            low    = sum(1 for f in approved if f.get("risk") == "low")
+            parts = []
+            if high:   parts.append(f"[red]{high} high[/red]")
+            if medium: parts.append(f"[yellow]{medium} medium[/yellow]")
+            if low:    parts.append(f"[green]{low} low[/green]")
+            console.print(
+                f"[green]✓[/green] [bold]Critic[/bold] — risk: {', '.join(parts)}"
+            )
+        else:
+            console.print("[green]✓[/green] [bold]Critic[/bold] — [dim]no findings to score[/dim]")
 
 
 

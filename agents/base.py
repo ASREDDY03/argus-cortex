@@ -47,8 +47,9 @@ FINDINGS_TOOL = {
                         "new_code":      {"type": "string",  "description": "Replacement lines. Empty string if not applicable."},
                         "pr_ready":      {"type": "boolean", "description": "True only if old_code and new_code are both non-empty and the change is safe to apply"},
                         "reasoning":     {"type": "string",  "description": "Explain concretely why this is a real bug or issue — not just what it is. State what would go wrong if unfixed, and why you are confident it is not intentional design. Required."},
+                        "confidence":    {"type": "integer", "minimum": 0, "maximum": 100, "description": "Self-assessed confidence (0-100) that this is a real issue and not intentional design. Be honest — the evaluator uses this to prioritize findings."},
                     },
-                    "required": ["file", "line", "severity", "category", "description", "suggested_fix", "old_code", "new_code", "pr_ready", "reasoning"],
+                    "required": ["file", "line", "severity", "category", "description", "suggested_fix", "old_code", "new_code", "pr_ready", "reasoning", "confidence"],
                 },
             }
         },
@@ -67,6 +68,7 @@ Rules:
 - Do NOT re-report issues listed in the KNOWN ISSUES section
 - reasoning must explain the actual risk (e.g. "attacker can bypass auth because..."), not just describe the code ("this might be a security issue")
 - If you are not certain something is a bug, do NOT report it
+- confidence must reflect genuine certainty: 90+ means you are certain, 70-89 means likely, below 70 means do not report it
 - Focus on NEW issues not previously found"""
 
 # Module-level model — reused across all agent instances.
@@ -149,7 +151,8 @@ class BaseAgent:
 
     @traceable(run_type="chain")
     def analyze(self, goal: str, focus: str = "", test_inventory: list[str] | None = None,
-                preloaded_contents: dict[str, str] | None = None) -> tuple[list[AgentFinding], int, int]:
+                preloaded_contents: dict[str, str] | None = None,
+                static_context: str = "") -> tuple[list[AgentFinding], int, int]:
         """Run agent analysis with long-term memory, prompt caching, and structured output."""
 
         # Use preloaded contents if provided (from run_node SHA check), else read from disk
@@ -180,11 +183,16 @@ class BaseAgent:
                 + "\n\n"
             )
 
+        static_block = ""
+        if static_context:
+            static_block = f"STATIC ANALYSIS RESULTS (verified by automated tools — treat as high-confidence facts):\n{static_context}\n\n"
+
         dynamic_block = (
             f"Goal: {goal}\n\n"
             f"Domain: {self.domain}\n\n"
             f"{focus_line}"
             f"{test_line}"
+            f"{static_block}"
             f"KNOWN ISSUES (already reported — do NOT repeat these):\n"
             f"{known_issues_text}\n\n"
             f"Review the files above for NEW issues only."
@@ -213,6 +221,9 @@ class BaseAgent:
         findings = result.get("findings", [])
         for f in findings:
             f["agent"] = self.name
+            # Stable ID derived from content — same issue across runs gets the same ID
+            id_src = f"{f.get('file', '')}|{f.get('category', '')}|{f.get('description', '')[:80]}"
+            f["finding_id"] = hashlib.sha256(id_src.encode()).hexdigest()[:16]
         return findings, tokens_in, tokens_out
 
     def run_node(self, state: "CortexState") -> dict:
@@ -265,11 +276,26 @@ class BaseAgent:
         self.files_to_review = list(changed_contents.keys())
 
         test_inv = (state.get("test_inventory") or {}).get(self.name, [])
-        findings, tokens_in, tokens_out = self.analyze(
-            state["goal"], focus=focus,
-            test_inventory=test_inv,
-            preloaded_contents=changed_contents,
-        )
+        static_results = state.get("static_analysis") or {}
+        static_parts = [v for v in static_results.values() if v]
+        static_ctx = "\n\n".join(static_parts) if static_parts else ""
+
+        try:
+            findings, tokens_in, tokens_out = self.analyze(
+                state["goal"], focus=focus,
+                test_inventory=test_inv,
+                preloaded_contents=changed_contents,
+                static_context=static_ctx,
+            )
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).error("[%s] analyze() failed: %s", self.name, exc)
+            update_file_shas(current_shas, state.get("run_id", ""))
+            return {
+                "findings": [], "suppressed_count": 0, "skipped_unchanged": skipped,
+                "agent_tokens_in": 0, "agent_tokens_out": 0,
+                "error": f"{self.name}: {exc}",
+            }
 
         # Record SHAs for all files (changed and unchanged) so next run skips cleanly
         update_file_shas(current_shas, state.get("run_id", ""))
