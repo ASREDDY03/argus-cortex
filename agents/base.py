@@ -97,11 +97,15 @@ class BaseAgent:
         for p in past:
             pr_url = p.get("pr_url")
             pr_state = p.get("pr_state")
+            close_reason = (p.get("close_reason") or "").strip()
             if pr_url:
                 if pr_state == "merged":
                     status = "FIXED — PR merged"
                 elif pr_state == "closed":
-                    status = f"PR closed without merge: {pr_url}"
+                    if close_reason:
+                        status = f"PR closed — reviewer note: \"{close_reason[:150]}\""
+                    else:
+                        status = f"PR closed without merge"
                 else:
                     status = f"PR open: {pr_url}"
             else:

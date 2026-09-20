@@ -8,6 +8,7 @@ Usage:
   python main.py run "goal" --web        # send to web dashboard
   python main.py run "goal" --auto       # auto-approve all (CI/webhook)
   python main.py sync-prs               # sync open PR states from GitHub
+  python main.py outcome-report         # show what the team accepts vs rejects
   python main.py history                # list recent runs
   python main.py history <run-id>       # full findings for one run
   python main.py watch                  # live dashboard
@@ -30,7 +31,7 @@ from memory.long_term import (
     start_run, finish_run, save_findings,
     mark_approved, mark_rejected, mark_pr_opened,
     get_run_history, init_db, save_pending_review, get_stats,
-    get_run_findings, get_weekly_stats,
+    get_run_findings, get_weekly_stats, get_outcome_summary,
 )
 from tools.email_tool import send_run_digest, send_weekly_digest
 from orchestrator.goal_suggester import suggest_goals
@@ -489,6 +490,108 @@ def sync_prs():
             "[dim]Merged/closed PRs are now excluded from deduplication — "
             "agents will report regressions on those files.[/dim]"
         )
+
+
+@app.command(name="outcome-report")
+def outcome_report():
+    """Show what the team accepts vs rejects — PR outcome patterns by category, agent, and file."""
+    init_db()
+    summary = get_outcome_summary()
+
+    totals = summary.get("totals", {})
+    total_prs = (totals.get("merged") or 0) + (totals.get("closed") or 0) + (totals.get("open") or 0)
+
+    if total_prs == 0:
+        console.print("[dim]No PR outcome data yet. Run sync-prs after your first PRs are closed or merged.[/dim]")
+        return
+
+    merged = totals.get("merged") or 0
+    closed = totals.get("closed") or 0
+    still_open = totals.get("open") or 0
+    overall_rate = int(merged / max(merged + closed, 1) * 100)
+
+    console.print(Panel(
+        f"[bold cyan]PR Outcome Report[/bold cyan]\n\n"
+        f"[green]{merged} merged[/green]  [dim]{closed} closed[/dim]  [cyan]{still_open} open[/cyan]  "
+        f"[dim]·[/dim]  Overall merge rate: [bold]{overall_rate}%[/bold]",
+        border_style="cyan",
+        title="Outcomes",
+    ))
+
+    # By category
+    if summary["by_category"]:
+        console.print("\n[bold]Acceptance Rate by Category[/bold]")
+        cat_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        cat_table.add_column("Category",  width=14)
+        cat_table.add_column("Total PRs", width=10, justify="right")
+        cat_table.add_column("Merged",    width=8,  justify="right")
+        cat_table.add_column("Closed",    width=8,  justify="right")
+        cat_table.add_column("Rate",      width=8,  justify="right")
+        cat_table.add_column("Bar",       width=14, no_wrap=True)
+
+        max_total = max((r["total_prs"] or 0 for r in summary["by_category"]), default=1)
+        for row in summary["by_category"]:
+            total = row["total_prs"] or 0
+            m     = row["merged"] or 0
+            c     = row["closed"] or 0
+            rate  = int(m / max(m + c, 1) * 100)
+            color = "green" if rate >= 70 else "yellow" if rate >= 40 else "red"
+            cat_table.add_row(
+                row["category"],
+                str(total),
+                f"[green]{m}[/green]",
+                f"[dim]{c}[/dim]",
+                f"[{color}]{rate}%[/{color}]",
+                f"[{color}]{_bar(m, max(m + c, 1), 12)}[/{color}]",
+            )
+        console.print(cat_table)
+
+    # By agent
+    if summary["by_agent"]:
+        console.print("\n[bold]Acceptance Rate by Agent[/bold]")
+        agent_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        agent_table.add_column("Agent",    width=24)
+        agent_table.add_column("PRs",      width=6,  justify="right")
+        agent_table.add_column("Merged",   width=8,  justify="right")
+        agent_table.add_column("Closed",   width=8,  justify="right")
+        agent_table.add_column("Rate",     width=7,  justify="right")
+
+        for row in summary["by_agent"]:
+            m     = row["merged"] or 0
+            c     = row["closed"] or 0
+            rate  = int(m / max(m + c, 1) * 100)
+            color = "green" if rate >= 70 else "yellow" if rate >= 40 else "red"
+            agent_table.add_row(
+                row["agent"],
+                str(row["total_prs"] or 0),
+                f"[green]{m}[/green]",
+                f"[dim]{c}[/dim]",
+                f"[{color}]{rate}%[/{color}]",
+            )
+        console.print(agent_table)
+
+    # Close reasons
+    if summary["close_reasons"]:
+        console.print("\n[bold]Recent Close Reasons[/bold]")
+        for r in summary["close_reasons"]:
+            title  = (r.get("title") or "")[:55]
+            reason = (r.get("close_reason") or "").replace("\n", " ")[:120]
+            console.print(f"  [dim]{title}[/dim]")
+            console.print(f"  [yellow]→[/yellow] {reason}\n")
+
+    # Files with most rejected PRs
+    if summary["rejected_files"]:
+        console.print("\n[bold]Files with Most Rejected PRs[/bold]")
+        file_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        file_table.add_column("File",         width=40)
+        file_table.add_column("Closed PRs",   width=12, justify="right")
+        for r in summary["rejected_files"]:
+            from pathlib import Path as _Path
+            short = _Path(r["file"]).name
+            file_table.add_row(short, str(r["closed_count"] or 0))
+        console.print(file_table)
+
+    console.print()
 
 
 @app.command()

@@ -88,6 +88,44 @@ def _open_issues(token: str, org: str, repo: str) -> list[str]:
     return []
 
 
+def _outcome_context() -> str:
+    """
+    Build a plain-text summary of past PR outcomes for the goal suggestion prompt.
+    Shows what the team merges vs closes so suggestions stay aligned with reality.
+    Returns empty string if no outcome data exists yet.
+    """
+    try:
+        from memory.long_term import get_outcome_summary
+        summary = get_outcome_summary()
+
+        if not summary["by_category"] and not summary["close_reasons"]:
+            return ""
+
+        lines = ["Past PR outcome patterns (what the team accepts):"]
+
+        for row in summary["by_category"]:
+            total = row["total_prs"] or 0
+            merged = row["merged"] or 0
+            if total > 0:
+                rate = int(merged / total * 100)
+                lines.append(f"  {row['category']}: {rate}% merged ({merged}/{total} PRs)")
+
+        if summary["close_reasons"]:
+            lines.append("Recent close reasons (why PRs were rejected):")
+            for r in summary["close_reasons"][:5]:
+                title = (r["title"] or "")[:50]
+                reason = (r["close_reason"] or "")[:120]
+                lines.append(f"  - \"{title}\": {reason}")
+
+        if summary["rejected_files"]:
+            names = [f.get("file", "").split("/")[-1] for f in summary["rejected_files"][:4]]
+            lines.append(f"Files with most rejected PRs: {', '.join(names)}")
+
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def suggest_goals(
@@ -150,6 +188,11 @@ def suggest_goals(
                 "Goals already run recently (avoid duplicating unless evidence of regression):\n"
                 + "\n".join(f"  - {g}" for g in goals_done)
             )
+
+    # 5. PR outcome history — what the team accepts vs rejects
+    outcome_ctx = _outcome_context()
+    if outcome_ctx:
+        context_parts.append(outcome_ctx)
 
     context = "\n\n".join(context_parts) if context_parts else "No external context available."
 

@@ -25,6 +25,28 @@ def get_repo():
     )
 
 
+def _extract_close_reason(pr) -> str:
+    """
+    Pull the most relevant human comment from a closed PR.
+    Checks formal reviews first (more specific), then falls back to issue comments.
+    Returns empty string if nothing useful is found.
+    """
+    try:
+        reviews = list(pr.get_reviews())
+        for review in reversed(reviews):
+            if review.body and review.body.strip() and review.state in (
+                "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
+            ):
+                return review.body.strip()[:300]
+        comments = list(pr.get_issue_comments())
+        for comment in reversed(comments):
+            if comment.body and comment.body.strip():
+                return comment.body.strip()[:300]
+    except Exception:
+        pass
+    return ""
+
+
 def sync_pr_states() -> list[dict]:
     """
     Check GitHub for the current state of every open Cortex PR and write the
@@ -36,6 +58,7 @@ def sync_pr_states() -> list[dict]:
         "pr_number": int   — PR number
         "state":     str   — 'open' | 'merged' | 'closed'
         "title":     str   — PR title
+        "close_reason": str — reviewer comment if closed (empty otherwise)
         "error":     str   — non-empty if the PR could not be fetched
       }
 
@@ -44,7 +67,7 @@ def sync_pr_states() -> list[dict]:
       'merged' — PR was merged (issue fixed — deduplicator won't suppress regressions)
       'closed' — PR was closed without merge (fix rejected)
     """
-    from memory.long_term import get_findings_with_open_prs, update_pr_state_by_url
+    from memory.long_term import get_findings_with_open_prs, update_pr_state_by_url, upsert_pr_outcome
 
     rows = get_findings_with_open_prs()
     if not rows:
@@ -56,7 +79,7 @@ def sync_pr_states() -> list[dict]:
         repo = get_repo()
     except Exception as e:
         logger.warning(f"[sync] Could not connect to GitHub: {e}")
-        return [{"pr_url": url, "pr_number": 0, "state": "", "title": "", "error": str(e)}
+        return [{"pr_url": url, "pr_number": 0, "state": "", "title": "", "close_reason": "", "error": str(e)}
                 for url in unique_urls]
 
     results: list[dict] = []
@@ -72,23 +95,37 @@ def sync_pr_states() -> list[dict]:
             else:
                 state = "open"
 
+            close_reason = _extract_close_reason(pr) if state == "closed" else ""
+            merged_by = (pr.merged_by.login if pr.merged_by else "") if state == "merged" else ""
+
             update_pr_state_by_url(url, state)
+            upsert_pr_outcome(
+                pr_url=url,
+                pr_number=pr_number,
+                state=state,
+                title=pr.title,
+                close_reason=close_reason,
+                merged_by=merged_by,
+            )
+
             logger.info(f"[sync] PR #{pr_number} → {state}")
             results.append({
-                "pr_url":    url,
-                "pr_number": pr_number,
-                "state":     state,
-                "title":     pr.title,
-                "error":     "",
+                "pr_url":       url,
+                "pr_number":    pr_number,
+                "state":        state,
+                "title":        pr.title,
+                "close_reason": close_reason,
+                "error":        "",
             })
         except Exception as e:
             logger.warning(f"[sync] Could not check PR {url}: {e}")
             results.append({
-                "pr_url":    url,
-                "pr_number": 0,
-                "state":     "",
-                "title":     "",
-                "error":     str(e),
+                "pr_url":       url,
+                "pr_number":    0,
+                "state":        "",
+                "title":        "",
+                "close_reason": "",
+                "error":        str(e),
             })
 
     return results
