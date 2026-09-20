@@ -30,6 +30,7 @@ Key LangGraph features used:
   - interrupt_before=["human_review"] (pause for human approval)
   - SqliteSaver checkpointing (durable, survives crashes, resumable)
 """
+import sqlite3
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from memory.state import CortexState
@@ -152,7 +153,9 @@ def build_graph(checkpoint_path: str = "checkpoints/cortex.db"):
     builder.add_edge("pr_creator", END)
 
     # --- Durable checkpointing (SQLite) ---
-    checkpointer = SqliteSaver.from_conn_string(checkpoint_path)
+    # Open connection directly to avoid context-manager lifecycle issues
+    conn = sqlite3.connect(checkpoint_path, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
 
     # --- Compile with human-in-the-loop interrupt ---
     return builder.compile(

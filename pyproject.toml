@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.28.0",
     "langgraph>=0.2.0",
+    "langgraph-checkpoint-sqlite>=1.0.0",
     "langchain-anthropic>=0.1.0",
     "langchain-core>=0.2.0",
     "langsmith>=0.1.0",
@@ -32,3 +33,6 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agents", "orchestrator", "memory", "tools", "config"]

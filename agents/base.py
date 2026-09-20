@@ -290,7 +290,7 @@ class BaseAgent:
         except Exception as exc:
             import logging as _log
             _log.getLogger(__name__).error("[%s] analyze() failed: %s", self.name, exc)
-            update_file_shas(current_shas, state.get("run_id", ""))
+            # Do NOT update SHAs on failure — files should be retried next run
             return {
                 "findings": [], "suppressed_count": 0, "skipped_unchanged": skipped,
                 "agent_tokens_in": 0, "agent_tokens_out": 0,

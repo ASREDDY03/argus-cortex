@@ -269,9 +269,13 @@ def update_pr_state_by_url(pr_url: str, state: str):
         )
 
 
+REVIEW_TTL_DAYS = 7  # force re-review even for unchanged files after this many days
+
+
 def get_stale_files(file_shas: dict[str, str]) -> list[str]:
     """
-    Return file paths whose SHA has changed since last review, or were never reviewed.
+    Return file paths that need re-review: SHA changed, never reviewed, or
+    reviewed more than REVIEW_TTL_DAYS ago (catches stale-but-unchanged files).
     file_shas: {relative_file_path: sha256_hex}
     """
     init_db()
@@ -279,10 +283,22 @@ def get_stale_files(file_shas: dict[str, str]) -> list[str]:
     with _conn() as conn:
         for file_path, current_sha in file_shas.items():
             row = conn.execute(
-                "SELECT content_sha FROM file_reviews WHERE file_path = ?",
+                "SELECT content_sha, reviewed_at FROM file_reviews WHERE file_path = ?",
                 (file_path,)
             ).fetchone()
-            if row is None or row["content_sha"] != current_sha:
+            if row is None:
+                stale.append(file_path)
+                continue
+            if row["content_sha"] != current_sha:
+                stale.append(file_path)
+                continue
+            # Force re-review if last review is older than TTL
+            try:
+                last = datetime.fromisoformat(row["reviewed_at"])
+                age_days = (datetime.utcnow() - last).days
+                if age_days >= REVIEW_TTL_DAYS:
+                    stale.append(file_path)
+            except Exception:
                 stale.append(file_path)
     return stale
 
@@ -561,3 +577,38 @@ def complete_pending_review(run_id: str, pr_urls: list[str]):
                WHERE run_id = ?""",
             (json.dumps(pr_urls), datetime.utcnow().isoformat(), run_id),
         )
+
+
+def get_run_findings(run_id: str) -> list[dict]:
+    """Return all findings for a specific run."""
+    init_db()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM findings WHERE run_id = ? ORDER BY severity DESC",
+            (run_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_weekly_stats() -> dict:
+    """Return aggregated stats for the past 7 days."""
+    init_db()
+    with _conn() as conn:
+        runs = conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE created_at >= datetime('now', '-7 days')"
+        ).fetchone()[0]
+        findings = conn.execute(
+            "SELECT COUNT(*) FROM findings WHERE created_at >= datetime('now', '-7 days')"
+        ).fetchone()[0]
+        approved = conn.execute(
+            "SELECT COUNT(*) FROM findings WHERE approved=1 AND created_at >= datetime('now', '-7 days')"
+        ).fetchone()[0]
+        prs = conn.execute(
+            "SELECT COUNT(*) FROM findings WHERE pr_url IS NOT NULL AND created_at >= datetime('now', '-7 days')"
+        ).fetchone()[0]
+    return {
+        "runs": runs,
+        "findings": findings,
+        "approved": approved,
+        "prs_opened": prs,
+    }

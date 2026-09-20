@@ -174,7 +174,13 @@ def run(
     if not approved:
         console.print("[yellow]No findings approved by Evaluator. Nothing to PR.[/yellow]")
         if not dry_run:
-            finish_run(run_id, state.get("agents_to_run", []))
+            cost_usd = _compute_cost(state)
+            finish_run(
+                run_id, state.get("agents_to_run", []),
+                tokens_in=state.get("agent_tokens_in", 0) + state.get("orch_tokens_in", 0),
+                tokens_out=state.get("agent_tokens_out", 0) + state.get("orch_tokens_out", 0),
+                cost_usd=cost_usd,
+            )
         return
 
     # ── Dry-run exit ──────────────────────────────────────────────────────────

@@ -9,15 +9,21 @@ import os
 from config.settings import settings
 
 
+_PLACEHOLDER_KEYS = {"your_langsmith_api_key_here", "your-langsmith-api-key", ""}
+
+
 def init_tracing():
     """
     Set LangSmith env vars from settings and enable tracing.
     Must be called before any LangGraph or LangChain code runs.
+    Only activates if the key looks like a real key (not a placeholder).
     """
-    if not settings.langchain_api_key:
+    key = settings.langchain_api_key or ""
+    if not key or key in _PLACEHOLDER_KEYS or not key.startswith("ls__"):
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
         return False
 
-    os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
+    os.environ["LANGCHAIN_API_KEY"] = key
     os.environ["LANGCHAIN_TRACING_V2"] = "true"
     os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
     return True
