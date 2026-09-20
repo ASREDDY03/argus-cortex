@@ -84,6 +84,13 @@ def init_db():
                 merged_by       TEXT,
                 synced_at       DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS file_reviews (
+                file_path    TEXT PRIMARY KEY,
+                content_sha  TEXT NOT NULL,
+                reviewed_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                run_id       TEXT
+            );
         """)
         # Migrations: add columns to existing DBs that pre-date them
         for migration in [
@@ -257,6 +264,43 @@ def update_pr_state_by_url(pr_url: str, state: str):
             "UPDATE findings SET pr_state=? WHERE pr_url=?",
             (state, pr_url),
         )
+
+
+def get_stale_files(file_shas: dict[str, str]) -> list[str]:
+    """
+    Return file paths whose SHA has changed since last review, or were never reviewed.
+    file_shas: {relative_file_path: sha256_hex}
+    """
+    init_db()
+    stale = []
+    with _conn() as conn:
+        for file_path, current_sha in file_shas.items():
+            row = conn.execute(
+                "SELECT content_sha FROM file_reviews WHERE file_path = ?",
+                (file_path,)
+            ).fetchone()
+            if row is None or row["content_sha"] != current_sha:
+                stale.append(file_path)
+    return stale
+
+
+def update_file_shas(file_shas: dict[str, str], run_id: str = ""):
+    """
+    Record current SHA for each reviewed file.
+    Called after agent analysis so next run can skip unchanged files.
+    """
+    now = datetime.utcnow().isoformat()
+    with _conn() as conn:
+        for file_path, sha in file_shas.items():
+            conn.execute(
+                """INSERT INTO file_reviews (file_path, content_sha, reviewed_at, run_id)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(file_path) DO UPDATE SET
+                     content_sha = excluded.content_sha,
+                     reviewed_at = excluded.reviewed_at,
+                     run_id      = excluded.run_id""",
+                (file_path, sha, now, run_id),
+            )
 
 
 def get_stats() -> dict:

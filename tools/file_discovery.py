@@ -191,6 +191,53 @@ def discover_files(repo_path: str | None = None) -> dict[str, list[str]]:
     return discovered
 
 
+def discover_test_files(repo_path: str | None = None) -> dict[str, list[str]]:
+    """
+    Walk the repo and return test file NAMES grouped by agent domain.
+    Returns only names (not contents) — agents use this as an inventory to avoid
+    flagging issues that already have test coverage.
+    """
+    root = Path(repo_path or settings.argus_repo_path)
+    if not root.exists():
+        return {}
+
+    buckets: dict[str, list[str]] = {
+        "springboot_agent": [],
+        "ml_agent":         [],
+        "react_agent":      [],
+        "security_agent":   [],
+        "jenkins_agent":    [],
+        "infra_agent":      [],
+        "observability_agent": [],
+        "dependency_agent": [],
+    }
+
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if _is_excluded(rel):
+            continue
+        if not _is_test_file(path):
+            continue
+
+        name = path.name
+        suffix = path.suffix.lower()
+        rel_str = str(rel)
+
+        if suffix == ".java":
+            buckets["springboot_agent"].append(name)
+            buckets["security_agent"].append(name)
+        elif suffix == ".py":
+            if "ml-service" in rel_str:
+                buckets["ml_agent"].append(name)
+            buckets["security_agent"].append(name)
+        elif suffix in (".jsx", ".tsx", ".js", ".ts"):
+            buckets["react_agent"].append(name)
+
+    return {agent: sorted(set(names)) for agent, names in buckets.items() if names}
+
+
 def summarise_discovery(discovered: dict[str, list[str]]) -> str:
     """
     One-line-per-agent summary for injecting into LLM prompts.

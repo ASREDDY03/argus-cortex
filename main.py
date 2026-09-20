@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from tools.observability import init_tracing
 from tools.github_tool import sync_pr_states
-from tools.file_discovery import discover_files
+from tools.file_discovery import discover_files, discover_test_files
 from tools.slack_tool import notify_run_complete
 from orchestrator.graph import build_graph
 from memory.long_term import (
@@ -57,6 +57,7 @@ def run(
     # ── Goal Suggester — runs BEFORE the orchestrator ─────────────────────────
     # Discover files first so the suggester has file context
     agent_files = discover_files()
+    test_inventory = discover_test_files()
 
     if not goal:
         goal = _suggest_and_pick_goal(agent_files)
@@ -111,6 +112,7 @@ def run(
         "agents_to_run": [],
         "agent_focus": {},
         "agent_files": agent_files,
+        "test_inventory": test_inventory,
         "findings": [],
         "cross_cutting_issues": [],
         "coverage_gaps": [],
@@ -128,6 +130,7 @@ def run(
         "error": None,
         "retry_count": 0,
         "suppressed_count": 0,
+        "skipped_unchanged": 0,
         "agent_tokens_in": 0,
         "agent_tokens_out": 0,
         "orch_tokens_in": 0,

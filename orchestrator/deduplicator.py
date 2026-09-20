@@ -120,3 +120,63 @@ def deduplicate(
         )
 
     return kept, suppressed
+
+
+PRE_EVAL_THRESHOLD = 0.70
+
+
+def pre_evaluate_dedup(findings: list[dict]) -> tuple[list[dict], int]:
+    """
+    Merge near-duplicate findings before the evaluator sees them.
+    Targets cross-agent duplicates from shared files (docker-compose sent to
+    infra_agent + security_agent + dependency_agent, etc.).
+
+    Two findings are merged if they share the same file + category and their
+    description Jaccard similarity exceeds PRE_EVAL_THRESHOLD (0.70).
+    When merging, keep the finding with higher severity; append the other
+    agent's name so the evaluator knows both spotted it.
+
+    Returns (deduplicated_findings, dropped_count).
+    """
+    SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+    kept: list[dict] = []
+    dropped = 0
+    used: set[int] = set()
+
+    for i, f in enumerate(findings):
+        if i in used:
+            continue
+        f_words = _word_set(f.get("description", ""))
+        f_file  = f.get("file", "")
+        f_cat   = f.get("category", "")
+        merged_agents = [f.get("agent", "")]
+
+        for j in range(i + 1, len(findings)):
+            if j in used:
+                continue
+            g = findings[j]
+            if g.get("file") != f_file or g.get("category") != f_cat:
+                continue
+            g_words = _word_set(g.get("description", ""))
+            if _jaccard(f_words, g_words) >= PRE_EVAL_THRESHOLD:
+                used.add(j)
+                dropped += 1
+                merged_agents.append(g.get("agent", ""))
+                # Keep the higher-severity finding
+                if SEV_RANK.get(g.get("severity", "low"), 3) < SEV_RANK.get(f.get("severity", "low"), 3):
+                    f = dict(g)
+                    f_words = g_words
+
+        winner = dict(f)
+        if len(merged_agents) > 1:
+            winner["agent"] = "+".join(sorted(set(merged_agents)))
+        kept.append(winner)
+
+    if dropped:
+        logger.info(
+            "[pre-eval dedup] %d finding(s) merged before evaluator "
+            "(cross-agent duplicates from shared files)", dropped
+        )
+
+    return kept, dropped

@@ -8,14 +8,16 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langsmith import traceable
 from memory.state import CortexState, AgentFinding
+from orchestrator.deduplicator import pre_evaluate_dedup
 from config.settings import settings
 
 EVALUATOR_SYSTEM = """You are the Evaluator for Argus Cortex. Your job is to independently assess findings from specialized agents and decide which are worth opening a PR for.
 
 Approval criteria:
-- APPROVE if: finding is specific (has file + line), fix is actionable, impact is clear
-- REJECT if: finding is vague, duplicated, incorrect, or the fix would break functionality
+- APPROVE if: finding has file + line, fix is actionable, and reasoning explains a concrete risk
+- REJECT if: finding is vague, duplicated, incorrect, the fix would break functionality, OR reasoning contains hedging language ("might", "could potentially", "may be", "appears to", "seems like", "possibly")
 
+Pay special attention to the reasoning field — it is the primary signal for confidence.
 Call submit_evaluation with your decision for every finding."""
 
 EVALUATION_TOOL = {
@@ -77,6 +79,14 @@ def run_evaluator(state: CortexState) -> dict:
             "rejected_findings": [],
             "evaluation_notes": "No findings to evaluate.",
         }
+
+    # Merge near-duplicate findings from shared files before evaluator sees them
+    findings, pre_eval_dropped = pre_evaluate_dedup(findings)
+    if pre_eval_dropped:
+        import logging as _log
+        _log.getLogger(__name__).info(
+            "[evaluator] Pre-eval dedup removed %d cross-agent duplicate(s)", pre_eval_dropped
+        )
 
     # Include Synthesizer output so cross-cutting patterns influence scoring
     synthesis_parts = []

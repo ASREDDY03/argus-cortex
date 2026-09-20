@@ -13,12 +13,14 @@ LangSmith tracing:
   - ChatAnthropic auto-traces every LLM call inside it (prompt, response, tokens, cost)
   - Result: full nested trace visible in LangSmith UI
 """
+import hashlib
+import subprocess
 from pathlib import Path
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langsmith import traceable
 from memory.state import AgentFinding
-from memory.long_term import get_past_findings_for_files
+from memory.long_term import get_past_findings_for_files, get_stale_files, update_file_shas
 from orchestrator.deduplicator import deduplicate
 from config.settings import settings
 
@@ -44,8 +46,9 @@ FINDINGS_TOOL = {
                         "old_code":      {"type": "string",  "description": "Exact lines to replace, copy-pasted from the file. Empty string if not applicable."},
                         "new_code":      {"type": "string",  "description": "Replacement lines. Empty string if not applicable."},
                         "pr_ready":      {"type": "boolean", "description": "True only if old_code and new_code are both non-empty and the change is safe to apply"},
+                        "reasoning":     {"type": "string",  "description": "Explain concretely why this is a real bug or issue — not just what it is. State what would go wrong if unfixed, and why you are confident it is not intentional design. Required."},
                     },
-                    "required": ["file", "line", "severity", "category", "description", "suggested_fix", "old_code", "new_code", "pr_ready"],
+                    "required": ["file", "line", "severity", "category", "description", "suggested_fix", "old_code", "new_code", "pr_ready", "reasoning"],
                 },
             }
         },
@@ -62,6 +65,8 @@ Rules:
 - old_code must be the EXACT text from the file (copy-paste it) — it will be used for find-and-replace
 - old_code must be unique in the file — include enough surrounding lines to make it unique
 - Do NOT re-report issues listed in the KNOWN ISSUES section
+- reasoning must explain the actual risk (e.g. "attacker can bypass auth because..."), not just describe the code ("this might be a security issue")
+- If you are not certain something is a bug, do NOT report it
 - Focus on NEW issues not previously found"""
 
 # Module-level model — reused across all agent instances.
@@ -113,6 +118,25 @@ class BaseAgent:
             lines.append(f"- [{p['severity']}] {p['file']} — {p['description']} ({status})")
         return "\n".join(lines)
 
+    def _git_last_commit(self, relative_path: str) -> str:
+        """Return 'subject (author, relative time)' for the file's last commit, or empty string."""
+        repo = getattr(settings, "argus_repo_path", "") or ""
+        if not repo:
+            return ""
+        try:
+            result = subprocess.run(
+                ["git", "log", "-1", "--pretty=format:%s (%an, %ar)", "--", relative_path],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
     def _call_api(self, messages: list) -> tuple[dict, int, int]:
         """Invoke the LangChain model — returns (result, tokens_in, tokens_out)."""
         response = _llm_with_tools.invoke(messages)
@@ -124,29 +148,43 @@ class BaseAgent:
         return {"findings": []}, tokens_in, tokens_out
 
     @traceable(run_type="chain")
-    def analyze(self, goal: str, focus: str = "") -> tuple[list[AgentFinding], int, int]:
+    def analyze(self, goal: str, focus: str = "", test_inventory: list[str] | None = None,
+                preloaded_contents: dict[str, str] | None = None) -> tuple[list[AgentFinding], int, int]:
         """Run agent analysis with long-term memory, prompt caching, and structured output."""
 
-        # Read files
-        file_contents: dict[str, str] = {}
-        for f in self.files_to_review:
-            file_contents[f] = self.read_file(f)
+        # Use preloaded contents if provided (from run_node SHA check), else read from disk
+        file_contents: dict[str, str] = preloaded_contents or {
+            f: self.read_file(f) for f in self.files_to_review
+        }
 
         # Query long-term memory
         past_findings = get_past_findings_for_files(self.files_to_review)
         known_issues_text = self._format_known_issues(past_findings)
 
-        files_block = "\n\n".join(
-            f"=== {path} ===\n{content}"
-            for path, content in file_contents.items()
-        )
+        parts = []
+        for path, content in file_contents.items():
+            commit_info = self._git_last_commit(path)
+            header = f"=== {path} ==="
+            if commit_info:
+                header += f"\nLast commit: {commit_info}"
+            parts.append(f"{header}\n{content}")
+        files_block = "\n\n".join(parts)
 
         focus_line = f"Focus specifically on: {focus}\n\n" if focus else ""
+
+        test_line = ""
+        if test_inventory:
+            test_line = (
+                "Existing test files in this domain — do NOT flag issues already covered by these:\n"
+                + "\n".join(f"  - {t}" for t in test_inventory[:25])
+                + "\n\n"
+            )
 
         dynamic_block = (
             f"Goal: {goal}\n\n"
             f"Domain: {self.domain}\n\n"
             f"{focus_line}"
+            f"{test_line}"
             f"KNOWN ISSUES (already reported — do NOT repeat these):\n"
             f"{known_issues_text}\n\n"
             f"Review the files above for NEW issues only."
@@ -185,19 +223,56 @@ class BaseAgent:
         """
         from memory.state import CortexState  # avoid circular at module level
         if self.name not in state.get("agents_to_run", []):
-            return {"findings": [], "suppressed_count": 0, "agent_tokens_in": 0, "agent_tokens_out": 0}
+            return {"findings": [], "suppressed_count": 0, "skipped_unchanged": 0, "agent_tokens_in": 0, "agent_tokens_out": 0}
 
         agent_files_map = state.get("agent_files", {})
         discovered = agent_files_map.get(self.name, [])
 
         # Discovery ran but found nothing for this agent — skip to save tokens
         if agent_files_map and not discovered:
-            return {"findings": [], "suppressed_count": 0, "agent_tokens_in": 0, "agent_tokens_out": 0}
+            return {"findings": [], "suppressed_count": 0, "skipped_unchanged": 0, "agent_tokens_in": 0, "agent_tokens_out": 0}
 
         if discovered:
             self.files_to_review = discovered
         focus = state.get("agent_focus", {}).get(self.name, "")
-        findings, tokens_in, tokens_out = self.analyze(state["goal"], focus=focus)
+
+        # Read all assigned files and compute SHAs
+        all_contents: dict[str, str] = {}
+        current_shas: dict[str, str] = {}
+        for f in self.files_to_review:
+            content = self.read_file(f)
+            if not content.startswith("[File not found"):
+                all_contents[f] = content
+                current_shas[f] = hashlib.sha256(content.encode()).hexdigest()
+
+        # Only analyze files whose content changed since last review
+        stale_files = get_stale_files(current_shas)
+        changed_contents = {f: all_contents[f] for f in stale_files if f in all_contents}
+        skipped = len(self.files_to_review) - len(changed_contents)
+
+        if not changed_contents:
+            import logging as _log
+            _log.getLogger(__name__).info(
+                "[%s] All %d file(s) unchanged since last review — skipping",
+                self.name, len(self.files_to_review),
+            )
+            # Still update SHAs to refresh reviewed_at timestamp
+            update_file_shas(current_shas, state.get("run_id", ""))
+            return {"findings": [], "suppressed_count": 0, "skipped_unchanged": skipped,
+                    "agent_tokens_in": 0, "agent_tokens_out": 0}
+
+        # Restrict analysis to changed files
+        self.files_to_review = list(changed_contents.keys())
+
+        test_inv = (state.get("test_inventory") or {}).get(self.name, [])
+        findings, tokens_in, tokens_out = self.analyze(
+            state["goal"], focus=focus,
+            test_inventory=test_inv,
+            preloaded_contents=changed_contents,
+        )
+
+        # Record SHAs for all files (changed and unchanged) so next run skips cleanly
+        update_file_shas(current_shas, state.get("run_id", ""))
 
         # Deduplicate against past findings — suppress issues already reported
         # with an open PR or approved in a prior run (only suppress active issues;
@@ -208,6 +283,7 @@ class BaseAgent:
         return {
             "findings": findings,
             "suppressed_count": suppressed,
+            "skipped_unchanged": skipped,
             "agent_tokens_in": tokens_in,
             "agent_tokens_out": tokens_out,
         }

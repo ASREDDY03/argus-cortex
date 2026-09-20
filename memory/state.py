@@ -13,6 +13,7 @@ class AgentFinding(TypedDict):
     old_code: str           # exact code to replace (empty string if not applicable)
     new_code: str           # replacement code (empty string if not applicable)
     pr_ready: bool
+    reasoning: str          # concrete explanation of the risk and why this is not intentional design
 
 
 class CortexState(TypedDict):
@@ -32,6 +33,9 @@ class CortexState(TypedDict):
 
     # Dynamically discovered files per agent (set before graph runs)
     agent_files: dict[str, list[str]]   # {agent_name: [relative_path, ...]}
+
+    # Test file inventory per agent domain (file names only, no content)
+    test_inventory: dict[str, list[str]]
 
     # Generator outputs — merged across all agents automatically
     findings: Annotated[List[AgentFinding], lambda a, b: a + b]
@@ -60,6 +64,9 @@ class CortexState(TypedDict):
 
     # Deduplication — findings suppressed as known duplicates across all agents
     suppressed_count: Annotated[int, lambda a, b: a + b]
+
+    # SHA-based file skipping — files with unchanged content since last review
+    skipped_unchanged: Annotated[int, lambda a, b: a + b]
 
     # Token usage — separate per model tier so cost can be computed accurately
     # agent_*       : claude-haiku-4-5  (all 8 generator agents)
