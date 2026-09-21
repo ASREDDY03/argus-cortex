@@ -1,7 +1,8 @@
 from memory.state import CortexState
-from agents.base import BaseAgent
+from agents.base import BaseAgent, AGENT_SYSTEM
 
-INFRA_SYSTEM = """You are a senior DevOps/infrastructure engineer reviewing the Argus Agent infrastructure configuration.
+_INFRA_DOMAIN_RULES = """
+You are a senior DevOps/infrastructure engineer reviewing the Argus Agent infrastructure configuration.
 
 Argus Agent runs as a Docker Compose stack proxied by nginx, with Kubernetes manifests for production and Ansible for provisioning.
 
@@ -62,6 +63,8 @@ REPORTING RULES
 - old_code must be the EXACT text from the file
 - pr_ready: true only when the fix is safe and complete
 - Do NOT re-report issues listed in KNOWN ISSUES"""
+
+INFRA_SYSTEM = AGENT_SYSTEM + "\n\n" + _INFRA_DOMAIN_RULES
 
 
 class InfraAgent(BaseAgent):

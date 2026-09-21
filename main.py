@@ -15,9 +15,12 @@ Usage:
   python main.py trends                 # week-over-week trends
   python main.py send-digest            # email weekly digest
 """
+import logging
 import uuid
 import typer
 from datetime import datetime
+
+logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel

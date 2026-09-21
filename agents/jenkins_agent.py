@@ -19,9 +19,10 @@ Context files:
   - Devops/docker-compose.yml — reveals which services exist and how they run
 """
 from memory.state import CortexState
-from agents.base import BaseAgent
+from agents.base import BaseAgent, AGENT_SYSTEM
 
-JENKINS_SYSTEM = """You are a senior DevOps engineer and CI/CD specialist reviewing the Argus Agent Jenkins pipeline.
+_JENKINS_DOMAIN_RULES = """
+You are a senior DevOps engineer and CI/CD specialist reviewing the Argus Agent Jenkins pipeline.
 
 Argus Agent is a Spring Boot backend + React frontend + Python ML service deployed on Kubernetes via Ansible.
 
@@ -82,6 +83,8 @@ Rules:
 - new_code must be a complete, valid Groovy Jenkinsfile — no placeholders, no ellipsis
 - Do NOT re-report issues listed in KNOWN ISSUES
 - Focus on NEW issues not previously found"""
+
+JENKINS_SYSTEM = AGENT_SYSTEM + "\n\n" + _JENKINS_DOMAIN_RULES
 
 
 class JenkinsAgent(BaseAgent):

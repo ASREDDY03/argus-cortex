@@ -1,7 +1,8 @@
 from memory.state import CortexState
-from agents.base import BaseAgent
+from agents.base import BaseAgent, AGENT_SYSTEM
 
-ML_SYSTEM = """You are a senior Python/ML engineer reviewing the Argus Agent ML service.
+_ML_DOMAIN_RULES = """
+You are a senior Python/ML engineer reviewing the Argus Agent ML service.
 
 The ML service is a Python Flask API that runs Isolation Forest anomaly detection on Jenkins build metrics. It stores model data in SQLite and serves predictions via REST.
 
@@ -50,6 +51,8 @@ REPORTING RULES
 - old_code must be the EXACT text from the file
 - pr_ready: true only when old_code + new_code together represent a safe, complete fix
 - Do NOT re-report issues listed in KNOWN ISSUES"""
+
+ML_SYSTEM = AGENT_SYSTEM + "\n\n" + _ML_DOMAIN_RULES
 
 
 class MLAgent(BaseAgent):

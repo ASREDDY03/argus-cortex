@@ -76,7 +76,7 @@ Rules:
 _llm = ChatAnthropic(
     model=settings.agent_model,
     api_key=settings.anthropic_api_key,
-    max_tokens=2048,
+    max_tokens=8192,
     max_retries=3,
 )
 _llm_with_tools = _llm.bind_tools(
@@ -141,12 +141,27 @@ class BaseAgent:
 
     def _call_api(self, messages: list) -> tuple[dict, int, int]:
         """Invoke the LangChain model — returns (result, tokens_in, tokens_out)."""
+        import logging as _log
         response = _llm_with_tools.invoke(messages)
         usage = response.usage_metadata or {}
         tokens_in  = usage.get("input_tokens", 0)
         tokens_out = usage.get("output_tokens", 0)
         if response.tool_calls:
-            return response.tool_calls[0]["args"], tokens_in, tokens_out
+            result = response.tool_calls[0]["args"]
+            n = len(result.get("findings", []))
+            _log.getLogger(__name__).info(
+                "[%s] API returned %d finding(s) | in=%d out=%d",
+                self.name, n, tokens_in, tokens_out,
+            )
+            for i, f in enumerate(result.get("findings", [])):
+                _log.getLogger(__name__).info(
+                    "  [%d] %s:%s [%s/%s] conf=%s — %s",
+                    i, f.get("file","?"), f.get("line","?"),
+                    f.get("severity","?"), f.get("category","?"),
+                    f.get("confidence","?"), f.get("description","?")[:80],
+                )
+            return result, tokens_in, tokens_out
+        _log.getLogger(__name__).warning("[%s] No tool call in response", self.name)
         return {"findings": []}, tokens_in, tokens_out
 
     @traceable(run_type="chain")

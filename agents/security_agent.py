@@ -13,9 +13,10 @@ Spans all layers of the stack:
 Context files cover the full attack surface rather than one domain.
 """
 from memory.state import CortexState
-from agents.base import BaseAgent
+from agents.base import BaseAgent, AGENT_SYSTEM
 
-SECURITY_SYSTEM = """You are a senior application security engineer performing an OWASP Top 10 review of the Argus Agent codebase.
+_SECURITY_DOMAIN_RULES = """
+You are a senior application security engineer performing an OWASP Top 10 review of the Argus Agent codebase.
 
 Argus Agent is a Spring Boot backend + React frontend + Python ML (Flask) service, deployed via Docker Compose on Kubernetes, proxied by nginx, with a Jenkins CI pipeline.
 
@@ -86,6 +87,8 @@ REPORTING RULES
 - pr_ready: true only when old_code + new_code together represent a safe, complete fix
 - Do NOT fabricate vulnerabilities — only report what is concretely present in the code
 - Do NOT re-report issues listed in KNOWN ISSUES"""
+
+SECURITY_SYSTEM = AGENT_SYSTEM + "\n\n" + _SECURITY_DOMAIN_RULES
 
 
 class SecurityAgent(BaseAgent):

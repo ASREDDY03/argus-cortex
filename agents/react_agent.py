@@ -1,7 +1,8 @@
 from memory.state import CortexState
-from agents.base import BaseAgent
+from agents.base import BaseAgent, AGENT_SYSTEM
 
-REACT_SYSTEM = """You are a senior React engineer reviewing the Argus Agent React 18 frontend.
+_REACT_DOMAIN_RULES = """
+You are a senior React engineer reviewing the Argus Agent React 18 frontend.
 
 The frontend is a Jenkins dashboard -- it polls build status, renders job lists, shows a Grafana tab, and has a job detail drawer. It calls a Spring Boot REST API using fetch/axios.
 
@@ -52,6 +53,8 @@ REPORTING RULES
 - old_code must be the EXACT text from the file
 - pr_ready: true only when old_code + new_code represent a safe, complete fix
 - Do NOT re-report issues listed in KNOWN ISSUES"""
+
+REACT_SYSTEM = AGENT_SYSTEM + "\n\n" + _REACT_DOMAIN_RULES
 
 
 class ReactAgent(BaseAgent):

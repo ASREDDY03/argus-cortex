@@ -18,9 +18,10 @@ knowledge of the ecosystem. For real-time CVE data, pair this with
 `pip-audit` / `npm audit` / `trivy` in CI.
 """
 from memory.state import CortexState
-from agents.base import BaseAgent
+from agents.base import BaseAgent, AGENT_SYSTEM
 
-DEPENDENCY_SYSTEM = """You are a senior DevSecOps engineer auditing the dependency manifests of the Argus Agent project.
+_DEPENDENCY_DOMAIN_RULES = """
+You are a senior DevSecOps engineer auditing the dependency manifests of the Argus Agent project.
 
 Argus Agent consists of:
   - Spring Boot backend  →  pom.xml
@@ -69,6 +70,8 @@ REPORTING RULES
 - For CVEs: always include the CVE ID and the safe version in description
 - Do NOT fabricate findings — only report what is concretely present
 - Do NOT re-report issues listed in KNOWN ISSUES"""
+
+DEPENDENCY_SYSTEM = AGENT_SYSTEM + "\n\n" + _DEPENDENCY_DOMAIN_RULES
 
 
 class DependencyAgent(BaseAgent):
